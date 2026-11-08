@@ -127,6 +127,12 @@ Each request is handled on its own. The plan and the todo list of earlier work d
 
 No account is needed. For better general results you can add a key for Brave Search, Tavily or Serper, or point `SEARXNG_URL` at your own SearXNG instance, either as an environment variable or with `/secret set NAME`. `/search providers` shows which providers are ready and `/search reset` clears the cache and cooldowns.
 
+## device support
+
+Lumo code can be run on Android devices and desktops
+
+can be 32 bit and 64 bit
+
 ### Learning
 
 Lessons are short notes such as "On Termux `pip install pillow` needs `pkg install libjpeg-turbo` first". They are stored in `~/.lumo/knowledge/lessons.jsonl`, shown in the system prompt only when they match the current request, and treated as data, not instructions. Text that looks like credentials or like instructions to the model is refused. Skills the agent writes for itself go to `~/.lumo/skills/` after you approve them. `/lessons off` disables the feature.
@@ -246,3 +252,7 @@ The model decides which skills to load: the system prompt lists every skill in o
 
 Apache License 2.0 (see `LICENSE` and `NOTICE`). It grants an explicit patent license, requires the notice to stay with redistributions, and does not grant the right to use the project's name. Versions before 1.3.0 were published under the MIT License. This is a summary, not legal advice.
 
+
+
+
+(coded by alfar988 -- Lumo code)
