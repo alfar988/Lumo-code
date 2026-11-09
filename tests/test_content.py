@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ from lumo.state import Ctx  # noqa: E402
 from lumo.templates import t_use_template  # noqa: E402
 
 SKILLS = ROOT / "skills"
+SKILL_ENV = dict(os.environ, PYTHONPATH=str(ROOT / "videokit") + os.pathsep + os.environ.get("PYTHONPATH", ""))      # the video skill imports lumovideo
 # Skills imported from outside the project. They are shipped as received: the only edit made here is the assistant's
 # name (the old product name -> Lumo AI) in the heading and in the sentences that name the assistant. Any other change must fail.
 IMPORTED = {
@@ -64,7 +66,7 @@ class Skills(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as d:
                     f = Path(d) / "example.py"
                     f.write_text(code, encoding="utf-8")
-                    r = subprocess.run([sys.executable, str(f)], capture_output=True, text=True, timeout=120, cwd=d)
+                    r = subprocess.run([sys.executable, str(f)], capture_output=True, text=True, timeout=120, cwd=d, env=SKILL_ENV)
                     self.assertEqual(r.returncode, 0, "%s python block %d\n%s%s" % (p.name, i, r.stdout[-400:], r.stderr[-800:]))
                     ran += 1
             for i, code in enumerate(blocks(text, "python", "syntax", "#"), 1):

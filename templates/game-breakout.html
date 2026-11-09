@@ -1,8 +1,9 @@
 <!DOCTYPE html>
 <!--
-  TEMPLATE game-breakout: paddle, ball and bricks (drag or keys, angle depends on where the ball hits the paddle, levels, three lives)
-  Engine kit (keep): DPR-aware canvas scaling, clamped time step, keyboard + pointer + on-screen buttons, HUD, start/pause/game-over overlay,
-  best score in localStorage (guarded), optional sound. Replace the brick layout, the colors and the power-ups; the ball and paddle physics are in update().
+  TEMPLATE game-breakout: brick breaker (drag or keys, ball angle by hit position, level patterns, tough bricks, falling power-ups: wide paddle, slow ball, multiball, extra life)
+  Engine kit v2 (keep): DPR-aware canvas scaling, clamped time step, keys + pressed keys + pointer + touch stick + on-screen buttons, HUD, start/pause/game-over
+  overlay, best score (localStorage, guarded), sound effects, particles, floating text, screen shake (all off for reduced motion).
+  Bricks, power-ups and levels are plain data (PATTERNS, DROPS). The ball physics in update() is the part worth keeping.
   Adapt it by replacing CONFIG, newState(), update() and draw(). Keep it ONE file.
 -->
 <html lang="__LANG__">
@@ -26,6 +27,7 @@
   }
   #stage { position: relative; width: 100%; height: 100%; display: grid; place-items: center; }
   canvas { display: block; background: #0b0f13; border-radius: 8px; touch-action: none; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   #hud { position: absolute; top: max(env(safe-area-inset-top), 8px); left: 8px; right: 8px; display: flex; gap: 12px; align-items: center; pointer-events: none; z-index: 2; }
   .stat { display: flex; flex-direction: column; line-height: 1.1; min-width: 52px; }
   .stat .k { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
@@ -43,6 +45,7 @@
   .controls .group { display: flex; gap: 10px; }
   .pad { pointer-events: auto; width: 64px; height: 64px; border-radius: 50%; border: 1px solid var(--line); background: rgba(23,29,37,.8); color: var(--ink);
          font: 700 20px var(--font); cursor: pointer; touch-action: none; display: grid; place-items: center; }
+  .pad.act { width: 76px; height: 76px; border-color: var(--accent); font-size: 22px; }
   .pad:active { background: var(--accent); color: var(--accent-ink); }
   #overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(8,11,15,.72); z-index: 3; padding: 16px; }
   #overlay[hidden] { display: none; }
@@ -50,6 +53,7 @@
   .card h1 { font-size: clamp(24px, 6vw, 32px); letter-spacing: -.01em; }
   .card p { color: var(--muted); font-size: 15px; line-height: 1.5; }
   .card .big { color: var(--ink); font-size: 36px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .badge { justify-self: center; padding: 4px 12px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 13px; font-weight: 700; }
   .btn { min-height: 48px; padding: 0 22px; border: 0; border-radius: 12px; background: var(--accent); color: var(--accent-ink); font: 700 16px var(--font); cursor: pointer; touch-action: manipulation; }
   .btn:hover { filter: brightness(1.08); }
   .btn:active { transform: translateY(1px); }
@@ -72,9 +76,12 @@
       <svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg>
     </button>
   </header>
+  <div class="controls" id="controls"></div>
+  <div id="live" class="sr" aria-live="polite"></div>
   <div id="overlay" role="dialog" aria-modal="true" aria-labelledby="ov-title">
     <div class="card">
       <h1 id="ov-title">__TITLE__</h1>
+      <div class="badge" id="ov-badge" hidden></div>
       <div class="big" id="ov-big" hidden></div>
       <p id="ov-text"></p>
       <p id="ov-help"></p>
@@ -86,68 +93,129 @@
 <script>
 (function () {
 "use strict";
-const CONFIG = { width: 360, height: 480, lives: 3, extra: "Level", intro: "Break every brick without losing the ball.", help: "Drag to move. Tap or press Space to launch." };
+const CONFIG = { id: "breakout", width: 360, height: 480, lives: 3, extra: "Level", controls: "lr", intro: "Break every brick without losing the ball.", help: "Drag to move, or use the arrows. Tap or press Space to launch." };
 const COLORS = ["#ff6b6b", "#ffb454", "#ffd166", "#7bd88f", "#5ccfe6", "#a78bfa", "#f78fb3", "#9aa7b6"];
+const PATTERNS = [
+  () => true,
+  (r, c) => (r + c) % 2 === 0,
+  (r, c) => c % 3 !== 1,
+  (r, c) => c >= r && c <= 7 - r || r > 3
+];
+const DROPS = { W: { color: "#5ccfe6", label: "W" }, S: { color: "#ffd166", label: "S" }, M: { color: "#a78bfa", label: "M" }, L: { color: "#ff6b6b", label: "+" } };
+
 function makeBricks(level) {
-  const rows = Math.min(8, 3 + level), bricks = [];
-  for (let r = 0; r < rows; r++) for (let c = 0; c < 8; c++) bricks.push({ x: 20 + c * 40, y: 40 + r * 20, w: 38, h: 16, color: COLORS[r % COLORS.length], alive: true });
+  const rows = Math.min(8, 3 + Math.ceil(level / 2)), pat = PATTERNS[(level - 1) % PATTERNS.length], bricks = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < 8; c++) {
+    if (!pat(r, c)) continue;
+    const tough = level >= 3 && r === 0;
+    bricks.push({ x: 20 + c * 40, y: 44 + r * 20, w: 38, h: 16, color: tough ? "#cfd8e3" : COLORS[r % COLORS.length], hp: tough ? 2 : 1, alive: true });
+  }
   return bricks;
 }
-function serve(s) { s.ball = { x: s.paddle.x, y: s.paddle.y - 10, vx: 0, vy: 0, r: 7, stuck: true }; }
+function newBall(x, y, vx, vy) { return { x: x, y: y, vx: vx, vy: vy, r: 7, stuck: false }; }
+function serve(s) { s.balls = [newBall(s.paddle.x, s.paddle.y - 10, 0, 0)]; s.balls[0].stuck = true; s.combo = 0; }
 function newState() {
-  const s = { level: 1, paddle: { x: W / 2, y: 440, w: 72, h: 12 }, bricks: makeBricks(1), ball: null };
+  const s = { level: 1, paddle: { x: W / 2, y: 440, w: 72, h: 12 }, bricks: makeBricks(1), balls: [], drops: [], wide: 0, slow: 0, combo: 0 };
   serve(s);
   return s;
 }
 function onStart() { setExtra(1); }
+function speedNow() { return (250 + state.level * 20) * (state.slow > 0 ? 0.72 : 1); }
+function dropFrom(k) {
+  if (Math.random() > 0.2) return;
+  const kind = pick(["W", "S", "M", "L", "W", "S"]);
+  if (kind === "L" && lives >= CONFIG.lives) return;
+  state.drops.push({ x: k.x + k.w / 2, y: k.y + k.h, kind: kind });
+}
+function applyDrop(kind) {
+  const s = state;
+  sfx("power");
+  if (kind === "W") { s.wide = 12; floatText(s.paddle.x, s.paddle.y - 18, "Wide", "#5ccfe6"); }
+  if (kind === "S") { s.slow = 10; floatText(s.paddle.x, s.paddle.y - 18, "Slow", "#ffd166"); }
+  if (kind === "L") { lives = Math.min(CONFIG.lives, lives + 1); hud(); floatText(s.paddle.x, s.paddle.y - 18, "+1 life", "#ff6b6b"); }
+  if (kind === "M") {
+    const src = s.balls.find((b) => !b.stuck);
+    if (src) { const sp = Math.hypot(src.vx, src.vy) || speedNow(); [-0.5, 0.5].forEach((a) => s.balls.push(newBall(src.x, src.y, Math.sin(a) * sp, -Math.cos(a) * sp))); floatText(s.paddle.x, s.paddle.y - 18, "Multiball", "#a78bfa"); }
+  }
+}
 function update(dt) {
-  const s = state, p = s.paddle, b = s.ball, speed = 250 + s.level * 20;
-  if (keys.ArrowLeft || keys.KeyA) p.x -= 340 * dt;
-  if (keys.ArrowRight || keys.KeyD) p.x += 340 * dt;
+  const s = state, p = s.paddle;
+  if (s.wide > 0) s.wide -= dt;
+  if (s.slow > 0) s.slow -= dt;
+  p.w += ((s.wide > 0 ? 112 : 72) - p.w) * Math.min(1, dt * 10);
+  const dir = input();
+  p.x += dir.x * 340 * dt;
   if (pointer.down) p.x = pointer.x;
   p.x = clamp(p.x, p.w / 2, W - p.w / 2);
-  if (b.stuck) {
-    b.x = p.x; b.y = p.y - 10;
-    if (pointer.tapped || keys.Space || keys.ArrowUp) { b.stuck = false; b.vx = rnd(-0.5, 0.5) * speed; b.vy = -speed; }
-    return;
-  }
-  b.x += b.vx * dt; b.y += b.vy * dt;
-  if (b.x < b.r) { b.x = b.r; b.vx = Math.abs(b.vx); }
-  if (b.x > W - b.r) { b.x = W - b.r; b.vx = -Math.abs(b.vx); }
-  if (b.y < b.r) { b.y = b.r; b.vy = Math.abs(b.vy); }
-  if (b.vy > 0 && b.y + b.r >= p.y && b.y - b.r <= p.y + p.h && Math.abs(b.x - p.x) <= p.w / 2 + b.r) {
-    const off = clamp((b.x - p.x) / (p.w / 2), -1, 1), sp = Math.hypot(b.vx, b.vy);
-    b.vx = Math.sin(off * 1.0) * sp; b.vy = -Math.cos(off * 1.0) * sp; b.y = p.y - b.r; beep(300, 0.04);
-  }
-  for (const k of s.bricks) {
-    if (!k.alive) continue;
-    if (b.x + b.r > k.x && b.x - b.r < k.x + k.w && b.y + b.r > k.y && b.y - b.r < k.y + k.h) {
-      k.alive = false; addScore(10); beep(620, 0.04);
-      const ox = Math.min(b.x + b.r - k.x, k.x + k.w - (b.x - b.r)), oy = Math.min(b.y + b.r - k.y, k.y + k.h - (b.y - b.r));
-      if (ox < oy) b.vx = -b.vx; else b.vy = -b.vy;
-      break;
+  const sp = speedNow();
+  for (let i = s.balls.length - 1; i >= 0; i--) {
+    const b = s.balls[i];
+    if (b.stuck) {
+      b.x = p.x; b.y = p.y - 10;
+      if (pointer.tapped || pressed.Space || pressed.ArrowUp) { b.stuck = false; b.vx = rnd(-0.5, 0.5) * sp; b.vy = -sp; sfx("jump"); }
+      continue;
     }
+    const cur = Math.hypot(b.vx, b.vy) || sp;                      // keep the speed in step with level and slow power-up
+    b.vx *= sp / cur; b.vy *= sp / cur;
+    b.x += b.vx * dt; b.y += b.vy * dt;
+    if (b.x < b.r) { b.x = b.r; b.vx = Math.abs(b.vx); }
+    if (b.x > W - b.r) { b.x = W - b.r; b.vx = -Math.abs(b.vx); }
+    if (b.y < b.r) { b.y = b.r; b.vy = Math.abs(b.vy); }
+    if (b.vy > 0 && b.y + b.r >= p.y && b.y - b.r <= p.y + p.h && Math.abs(b.x - p.x) <= p.w / 2 + b.r) {
+      const off = clamp((b.x - p.x) / (p.w / 2), -1, 1);
+      b.vx = Math.sin(off) * sp; b.vy = -Math.cos(off) * sp; b.y = p.y - b.r; s.combo = 0; beep(300, 0.04);
+    }
+    for (const k of s.bricks) {
+      if (!k.alive) continue;
+      if (b.x + b.r > k.x && b.x - b.r < k.x + k.w && b.y + b.r > k.y && b.y - b.r < k.y + k.h) {
+        const ox = Math.min(b.x + b.r - k.x, k.x + k.w - (b.x - b.r)), oy = Math.min(b.y + b.r - k.y, k.y + k.h - (b.y - b.r));
+        if (ox < oy) b.vx = -b.vx; else b.vy = -b.vy;
+        k.hp -= 1;
+        if (k.hp <= 0) {
+          k.alive = false; s.combo += 1;
+          const gain = 10 * Math.min(4, s.combo); addScore(gain); beep(520 + Math.min(6, s.combo) * 70, 0.05);
+          burst(k.x + k.w / 2, k.y + k.h / 2, k.color, 8, 100); if (s.combo > 1) floatText(k.x + k.w / 2, k.y, "+" + gain, "#eef2f6");
+          dropFrom(k);
+        } else { beep(240, 0.04); k.color = "#9aa7b6"; }
+        break;
+      }
+    }
+    if (b.y > H + 20) s.balls.splice(i, 1);
   }
-  if (s.bricks.every((k) => !k.alive)) { s.level += 1; setExtra(s.level); s.bricks = makeBricks(s.level); serve(s); beep(820, 0.12); return; }
-  if (b.y > H + 20) { loseLife(); if (phase === "playing") serve(s); }
+  for (let i = s.drops.length - 1; i >= 0; i--) {
+    const d = s.drops[i]; d.y += 110 * dt;
+    if (d.y > p.y - 8 && d.y < p.y + p.h + 8 && Math.abs(d.x - p.x) < p.w / 2 + 10) { applyDrop(d.kind); s.drops.splice(i, 1); }
+    else if (d.y > H + 20) s.drops.splice(i, 1);
+  }
+  if (s.bricks.every((k) => !k.alive)) { s.level += 1; setExtra(s.level); s.bricks = makeBricks(s.level); s.drops = []; serve(s); sfx("win"); floatText(W / 2, 300, "Level " + s.level, "#eef2f6"); return; }
+  if (!s.balls.length) { loseLife(); if (phase === "playing") serve(s); }
 }
 function draw() {
-  const s = state, p = s.paddle, b = s.ball;
+  const s = state, p = s.paddle;
   s.bricks.forEach((k) => { if (k.alive) rrect(k.x, k.y, k.w, k.h, 4, k.color); });
-  rrect(p.x - p.w / 2, p.y, p.w, p.h, 6, "#eef2f6");
-  ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fillStyle = ACCENT; ctx.fill();
-  if (b.stuck) text("Tap to launch", W / 2, 360, 16, "#9aa7b6");
+  rrect(p.x - p.w / 2, p.y, p.w, p.h, 6, s.wide > 0 ? "#5ccfe6" : "#eef2f6");
+  s.drops.forEach((d) => { circle(d.x, d.y, 10, DROPS[d.kind].color); text(DROPS[d.kind].label, d.x, d.y + 1, 12, "#0b0f13"); });
+  s.balls.forEach((b) => { circle(b.x, b.y, b.r, ACCENT); circle(b.x - 2, b.y - 2, 2, "rgba(255,255,255,.7)"); });
+  if (s.balls.length && s.balls[0].stuck) text("Tap to launch", W / 2, 360, 16, "#9aa7b6");
+  if (s.combo > 2) text("x" + Math.min(4, s.combo), W - 30, 24, 16, "#ffd166");
 }
 
-/* ===================== ENGINE KIT (keep): canvas scaling, loop, input, HUD, overlay, best score, sound ===================== */
-const W = CONFIG.width, H = CONFIG.height, TOP = CONFIG.top === undefined ? 56 : CONFIG.top, ACCENT = "__ACCENT__", STORE = "lumo-breakout-best";   // TOP: band for the HUD
+/* ===================== ENGINE KIT v2 (keep): canvas scaling, loop, input (keys, pointer, stick, buttons), HUD, overlay,
+   best score, sound effects, particles, floating text, screen shake. Replace CONFIG, newState(), update() and draw(). ===================== */
+const W = CONFIG.width, H = CONFIG.height, TOP = CONFIG.top === undefined ? 56 : CONFIG.top, ACCENT = "__ACCENT__";   // TOP: band for the HUD
+const STORE = "lumo-" + (CONFIG.id || "game") + "-best";
 const $ = (id) => document.getElementById(id);
 const canvas = $("game"), ctx = canvas.getContext("2d");
 const view = { scale: 1, dpr: 1 };
-const keys = {};
-const pointer = { x: W / 2, y: H / 2, sx: 0, sy: 0, down: false, tapped: false };
-let phase = "ready", state = null, score = 0, best = 0, lives = 0, last = 0, muted = false, audio = null;
+const keys = {}, pressed = {};                       // keys: held (KeyboardEvent.code); pressed: true for one frame after the key goes down
+const pointer = { x: W / 2, y: H / 2, sx: 0, sy: 0, down: false, tapped: false, released: false };
+const STICK_R = 46;
+const calm = (function () { try { return !!window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { return false; } })();
+let phase = "ready", state = null, score = 0, best = 0, lives = 0, last = 0, beganAt = -1000, muted = false, audio = null;
+let shakeT = 0, shakeMag = 0, flashA = 0, flashC = "#ffffff";
+const parts = [], floats = [];
 
+/* ---- helpers ---- */
 function resize() {
   const vw = Math.max(1, window.innerWidth), vh = Math.max(1, window.innerHeight);
   view.scale = Math.min(vw / W, vh / (H + TOP));
@@ -158,24 +226,22 @@ function resize() {
   canvas.height = Math.max(1, Math.floor((H + TOP) * view.scale * view.dpr));
 }
 function rnd(a, b) { return a + Math.random() * (b - a); }
+function rint(a, b) { return Math.floor(rnd(a, b + 1)); }                       // whole number from a to b, both included
+function pick(list) { return list[Math.floor(Math.random() * list.length)]; }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function dist(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by); }
+function overlap(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }   // rectangles {x, y, w, h}
 function text(str, x, y, size, color, align) {
   ctx.font = "700 " + size + "px system-ui, sans-serif"; ctx.fillStyle = color || "#eef2f6"; ctx.textAlign = align || "center"; ctx.textBaseline = "middle";
   ctx.fillText(str, x, y);
 }
 function rrect(x, y, w, h, r, color) {
-  r = Math.min(r, w / 2, h / 2);
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
   ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
   ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); ctx.fillStyle = color; ctx.fill();
 }
-function beep(freq, dur) {
-  if (muted) return;
-  try {
-    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
-    const o = audio.createOscillator(), g = audio.createGain();
-    o.frequency.value = freq; g.gain.value = 0.05; o.connect(g); g.connect(audio.destination); o.start(); o.stop(audio.currentTime + dur);
-  } catch (e) { /* sound is optional */ }
-}
+function circle(x, y, r, color) { ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); }
 function swipe(th) {          // "left" | "right" | "up" | "down" once per drag of at least th logical pixels, else null
   if (!pointer.down) return null;
   const dx = pointer.x - pointer.sx, dy = pointer.y - pointer.sy;
@@ -183,52 +249,194 @@ function swipe(th) {          // "left" | "right" | "up" | "down" once per drag 
   pointer.sx = pointer.x; pointer.sy = pointer.y;
   return Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up");
 }
+function input() {            // one reading for keys, the touch stick (CONFIG.controls = "stick") and the action keys: {x, y, action}, x and y from -1 to 1
+  let x = (keys.ArrowRight || keys.KeyD ? 1 : 0) - (keys.ArrowLeft || keys.KeyA ? 1 : 0);
+  let y = (keys.ArrowDown || keys.KeyS ? 1 : 0) - (keys.ArrowUp || keys.KeyW ? 1 : 0);
+  let sx = 0, sy = 0;
+  if (CONFIG.controls === "stick" && pointer.down) {
+    const dx = pointer.x - pointer.sx, dy = pointer.y - pointer.sy, d = Math.hypot(dx, dy);
+    if (d > 6) { const k = Math.min(1, d / STICK_R) / d; sx = dx * k; sy = dy * k; }
+  }
+  if (x && y) { x *= Math.SQRT1_2; y *= Math.SQRT1_2; }                        // diagonal keys are not faster
+  if (Math.abs(sx) > Math.abs(x)) x = sx;
+  if (Math.abs(sy) > Math.abs(y)) y = sy;
+  return { x: x, y: y, action: !!(keys.Space || keys.KeyZ || keys.KeyX || keys.KeyJ) };
+}
+
+/* ---- sound: tone(), noise() and named effects. All optional and silent when muted or when audio is blocked ---- */
+function ac() {
+  if (!audio) { try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audio = null; } }
+  if (audio && audio.state === "suspended" && audio.resume) { try { audio.resume(); } catch (e) { /* needs a user gesture first */ } }
+  return audio;
+}
+function tone(freq, dur, type, vol, delay, to) {
+  if (muted) return;
+  try {
+    const a = ac(); if (!a) return;
+    const t0 = a.currentTime + (delay || 0), o = a.createOscillator(), g = a.createGain();
+    o.type = type || "square"; o.frequency.setValueAtTime(freq, t0);
+    if (to) o.frequency.exponentialRampToValueAtTime(Math.max(1, to), t0 + dur);
+    g.gain.setValueAtTime(vol || 0.05, t0); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(a.destination); o.start(t0); o.stop(t0 + dur + 0.02);
+  } catch (e) { /* sound is optional */ }
+}
+function noise(dur, vol, delay) {
+  if (muted) return;
+  try {
+    const a = ac(); if (!a) return;
+    const n = Math.max(1, Math.floor(a.sampleRate * dur)), buf = a.createBuffer(1, n, a.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    const s = a.createBufferSource(), g = a.createGain();
+    s.buffer = buf; g.gain.value = vol || 0.06; s.connect(g); g.connect(a.destination); s.start(a.currentTime + (delay || 0));
+  } catch (e) { /* sound is optional */ }
+}
+const SFX = {
+  click: () => tone(660, 0.05, "square", 0.04),
+  tick: () => tone(1000, 0.03, "square", 0.03),
+  coin: () => { tone(880, 0.07, "square", 0.05); tone(1320, 0.1, "square", 0.05, 0.07); },
+  jump: () => tone(320, 0.16, "square", 0.05, 0, 760),
+  shoot: () => tone(880, 0.09, "sawtooth", 0.03, 0, 220),
+  hit: () => { noise(0.14, 0.08); tone(180, 0.12, "sawtooth", 0.05, 0, 60); },
+  boom: () => { noise(0.35, 0.1); tone(120, 0.3, "sawtooth", 0.06, 0, 40); },
+  power: () => { tone(440, 0.08, "triangle", 0.06); tone(660, 0.08, "triangle", 0.06, 0.08); tone(990, 0.12, "triangle", 0.06, 0.16); },
+  win: () => { [523, 659, 784, 1046].forEach((f, i) => tone(f, 0.14, "triangle", 0.06, i * 0.1)); },
+  lose: () => tone(300, 0.3, "sawtooth", 0.05, 0, 70)
+};
+function sfx(name) { if (SFX[name]) SFX[name](); }
+function beep(freq, dur) { tone(freq, dur || 0.08, "square", 0.05); }
+function buzz(ms) { try { if (!muted && navigator.vibrate) navigator.vibrate(ms || 20); } catch (e) { /* not supported */ } }
+
+/* ---- effects: burst(x, y, color, count, speed), floatText(x, y, text, color), shake(strength), flash(color). Off for reduced motion ---- */
+function burst(x, y, color, n, speed) {
+  n = calm ? Math.min(n || 12, 4) : (n || 12); speed = speed || 120;
+  for (let i = 0; i < n && parts.length < 320; i++) {
+    const a = Math.random() * Math.PI * 2, v = speed * (0.35 + Math.random() * 0.65);
+    parts.push({ x: x, y: y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0, max: 0.35 + Math.random() * 0.4, size: 2 + Math.random() * 2.5, color: color || ACCENT });
+  }
+}
+function floatText(x, y, str, color) { if (floats.length < 40) floats.push({ x: x, y: y, str: String(str), color: color || "#eef2f6", life: 0 }); }
+function shake(mag) { if (!calm) { shakeMag = Math.max(shakeMag, mag || 6); shakeT = 0.28; } }
+function flash(color) { if (!calm) { flashC = color || "#ffffff"; flashA = 0.35; } }
+function fxUpdate(dt) {
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i]; p.life += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.96; p.vy = p.vy * 0.96 + 90 * dt;
+    if (p.life >= p.max) parts.splice(i, 1);
+  }
+  for (let i = floats.length - 1; i >= 0; i--) { const f = floats[i]; f.life += dt; f.y -= 34 * dt; if (f.life > 0.9) floats.splice(i, 1); }
+  if (shakeT > 0) shakeT -= dt; else shakeMag = 0;
+  if (flashA > 0) flashA = Math.max(0, flashA - dt * 1.4);
+}
+function fxDraw() {
+  for (const p of parts) { ctx.globalAlpha = Math.max(0, 1 - p.life / p.max); ctx.fillStyle = p.color; ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size); }
+  ctx.globalAlpha = 1;
+  for (const f of floats) { ctx.globalAlpha = Math.max(0, 1 - f.life / 0.9); text(f.str, f.x, f.y, 14, f.color); }
+  ctx.globalAlpha = 1;
+}
+function drawStick() {        // the ring and knob of the touch stick
+  if (CONFIG.controls !== "stick" || !pointer.down || phase !== "playing") return;
+  const dx = pointer.x - pointer.sx, dy = pointer.y - pointer.sy, d = Math.hypot(dx, dy) || 1, k = Math.min(1, STICK_R / d);
+  ctx.globalAlpha = 0.28; ctx.lineWidth = 2; ctx.strokeStyle = "#eef2f6"; ctx.beginPath(); ctx.arc(pointer.sx, pointer.sy, STICK_R, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 0.5; circle(pointer.sx + dx * k, pointer.sy + dy * k, 14, "#eef2f6"); ctx.globalAlpha = 1;
+}
+
+/* ---- HUD, overlay, game flow ---- */
 function hud() {
   $("hud-score").textContent = String(Math.floor(score));
-  $("hud-best").textContent = String(best);
+  $("hud-best").textContent = String(Math.max(best, Math.floor(score)));
   if (CONFIG.lives > 0) $("hud-lives").textContent = "●".repeat(Math.max(0, lives)) + "○".repeat(Math.max(0, CONFIG.lives - lives));
 }
 function setExtra(v) { $("hud-extra").textContent = String(v); }
 function addScore(n) { score += n; hud(); }
+function announce(msg) { $("live").textContent = msg; }
 function saveBest() { try { localStorage.setItem(STORE, String(best)); } catch (e) { /* storage may be blocked */ } }
-function showOverlay(title, body, big, btn) {
+function showOverlay(title, body, big, btn, badge) {
   $("ov-title").textContent = title; $("ov-text").textContent = body || ""; $("ov-help").textContent = phase === "ready" ? (CONFIG.help || "") : "";
-  $("ov-big").hidden = !big; $("ov-big").textContent = big || ""; $("ov-btn").textContent = btn; $("overlay").hidden = false;
+  $("ov-big").hidden = !big; $("ov-big").textContent = big || ""; $("ov-badge").hidden = !badge; $("ov-badge").textContent = badge || "";
+  $("ov-btn").textContent = btn; $("overlay").hidden = false;
+  try { $("ov-btn").focus(); } catch (e) { /* focus is a convenience */ }
 }
 function hideOverlay() { $("overlay").hidden = true; }
 function begin() {
-  if (phase === "paused") { phase = "playing"; hideOverlay(); return; }
-  state = newState(); score = 0; lives = CONFIG.lives; phase = "playing"; pointer.tapped = false; hideOverlay(); hud();
+  if (phase === "playing" && last - beganAt < 250) return;      // a key press and the focused button can both fire for one action
+  if (phase === "paused") { phase = "playing"; beganAt = last; hideOverlay(); return; }
+  state = newState(); score = 0; lives = CONFIG.lives || 0; phase = "playing"; beganAt = last; pointer.tapped = false;
+  parts.length = 0; floats.length = 0; shakeT = 0; shakeMag = 0; flashA = 0;
+  hideOverlay(); hud(); sfx("click");
   if (typeof onStart === "function") onStart();
 }
 function togglePause() {
   if (phase === "playing") { phase = "paused"; showOverlay("Paused", "", "", "Resume"); }
   else if (phase === "paused") begin();
 }
-function gameOver(message) {
-  phase = "over"; if (score > best) { best = Math.floor(score); saveBest(); } hud(); beep(140, 0.25);
-  showOverlay("Game over", (message ? message + " " : "") + "Best: " + best, String(Math.floor(score)), "Play again");
+function gameOver(message, won) {
+  if (phase === "over") return;
+  phase = "over";
+  const fresh = score > best && score > 0;
+  if (score > best) { best = Math.floor(score); saveBest(); }
+  hud(); sfx(won ? "win" : "lose"); buzz(won ? 15 : 60);
+  showOverlay(won ? "You win!" : "Game over", (message ? message + " " : "") + "Best: " + best, String(Math.floor(score)), "Play again", fresh ? "New best!" : "");
+  announce((won ? "You win. " : "Game over. ") + "Score " + Math.floor(score));
 }
 function loseLife() {
-  lives -= 1; hud(); beep(180, 0.15);
+  lives -= 1; hud(); sfx("hit"); shake(6); buzz(30);
   if (lives <= 0) gameOver();
 }
+function toggleMute() {
+  muted = !muted; $("btn-mute").setAttribute("aria-pressed", String(muted));
+  try { localStorage.setItem(STORE + "-muted", muted ? "1" : "0"); } catch (e) { /* storage may be blocked */ }
+}
 function frame(t) {
+  requestAnimationFrame(frame);
   const dt = Math.min(50, Math.max(0, t - last)) / 1000; last = t;
   if (phase === "playing") update(dt);
+  if (phase === "playing" || phase === "over") fxUpdate(dt);
   ctx.setTransform(view.scale * view.dpr, 0, 0, view.scale * view.dpr, 0, 0);
-  ctx.fillStyle = "#0b0f13"; ctx.fillRect(0, 0, W, H + TOP);
+  ctx.fillStyle = CONFIG.bg || "#0b0f13"; ctx.fillRect(0, 0, W, H + TOP);
   ctx.translate(0, TOP);
-  draw();
-  pointer.tapped = false;
-  requestAnimationFrame(frame);
+  if (shakeT > 0 && shakeMag) ctx.translate((Math.random() - 0.5) * shakeMag, (Math.random() - 0.5) * shakeMag);
+  draw(); fxDraw(); drawStick();
+  if (flashA > 0) { ctx.globalAlpha = flashA; ctx.fillStyle = flashC; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; }
+  pointer.tapped = false; pointer.released = false;
+  for (const k in pressed) pressed[k] = false;
 }
 
+/* ---- on-screen buttons: CONFIG.controls = "dpad" | "lr" | "lr-action" | "action" | "stick" | "none", or CONFIG.buttons = [[left group], [right group]] of [code, label, aria-label] ---- */
+const PRESETS = {
+  dpad: [[["ArrowLeft", "\u2190", "Left"], ["ArrowUp", "\u2191", "Up"]], [["ArrowDown", "\u2193", "Down"], ["ArrowRight", "\u2192", "Right"]]],
+  lr: [[["ArrowLeft", "\u2190", "Left"]], [["ArrowRight", "\u2192", "Right"]]],
+  "lr-action": [[["ArrowLeft", "\u2190", "Left"], ["ArrowRight", "\u2192", "Right"]], [["Space", CONFIG.actionLabel || "A", CONFIG.actionName || "Action"]]],
+  action: [[], [["Space", CONFIG.actionLabel || "A", CONFIG.actionName || "Action"]]],
+  stick: [[], []],
+  none: [[], []]
+};
+function bindKey(el, code) {
+  el.addEventListener("pointerdown", (e) => { e.preventDefault(); keys[code] = true; pressed[code] = true; });
+  const off = () => { keys[code] = false; };
+  el.addEventListener("pointerup", off); el.addEventListener("pointerleave", off); el.addEventListener("pointercancel", off);
+}
+function buildControls() {
+  const host = $("controls"), groups = CONFIG.buttons || PRESETS[CONFIG.controls || "none"] || PRESETS.none;
+  groups.forEach((g) => {
+    if (!g.length) { host.appendChild(document.createElement("span")); return; }      // keeps the left and right sides apart
+    const box = document.createElement("div"); box.className = "group";
+    g.forEach((b) => {
+      const el = document.createElement("button");
+      el.type = "button"; el.className = b[0] === "Space" ? "pad act" : "pad"; el.textContent = b[1];
+      el.setAttribute("aria-label", b[2]); el.setAttribute("data-key", b[0]);
+      bindKey(el, b[0]); box.appendChild(el);
+    });
+    host.appendChild(box);
+  });
+}
+
+/* ---- events ---- */
 window.addEventListener("resize", resize);
 window.addEventListener("keydown", (e) => {
+  if (!e.repeat) pressed[e.code] = true;
   keys[e.code] = true;
   if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].indexOf(e.code) >= 0) e.preventDefault();
   if (e.code === "KeyP" || e.code === "Escape") togglePause();
+  else if (e.code === "KeyM") toggleMute();
   else if ((e.code === "Enter" || e.code === "Space") && phase !== "playing") begin();
 });
 window.addEventListener("keyup", (e) => { keys[e.code] = false; });
@@ -236,30 +444,33 @@ function toLogical(e) {
   const r = canvas.getBoundingClientRect();
   pointer.x = (e.clientX - r.left) * W / Math.max(1, r.width); pointer.y = (e.clientY - r.top) * (H + TOP) / Math.max(1, r.height) - TOP;
 }
-canvas.addEventListener("pointerdown", (e) => { toLogical(e); pointer.sx = pointer.x; pointer.sy = pointer.y; pointer.down = true; pointer.tapped = true; });
-canvas.addEventListener("pointermove", (e) => { toLogical(e); });
-window.addEventListener("pointerup", () => { pointer.down = false; });
-window.addEventListener("pointercancel", () => { pointer.down = false; });
-document.querySelectorAll("[data-key]").forEach((el) => {      // on-screen buttons act like keys
-  const k = el.getAttribute("data-key");
-  el.addEventListener("pointerdown", (e) => { e.preventDefault(); keys[k] = true; });
-  const off = () => { keys[k] = false; };
-  el.addEventListener("pointerup", off); el.addEventListener("pointerleave", off); el.addEventListener("pointercancel", off);
+canvas.addEventListener("pointerdown", (e) => {
+  toLogical(e); pointer.sx = pointer.x; pointer.sy = pointer.y; pointer.down = true; pointer.tapped = true;
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* capture is optional */ }
 });
+canvas.addEventListener("pointermove", (e) => { toLogical(e); });
+window.addEventListener("pointerup", () => { if (pointer.down) pointer.released = true; pointer.down = false; });
+window.addEventListener("pointercancel", () => { pointer.down = false; });
 $("ov-btn").addEventListener("click", begin);
 $("btn-pause").addEventListener("click", togglePause);
-$("btn-mute").addEventListener("click", () => { muted = !muted; $("btn-mute").setAttribute("aria-pressed", String(muted)); });
+$("btn-mute").addEventListener("click", toggleMute);
 document.addEventListener("visibilitychange", () => { if (document.hidden && phase === "playing") togglePause(); });
 
-try { best = Number(localStorage.getItem(STORE)) || 0; } catch (e) { best = 0; }
+/* ---- start ---- */
+try { best = Number(localStorage.getItem(STORE)) || 0; muted = localStorage.getItem(STORE + "-muted") === "1"; } catch (e) { best = 0; }
+$("btn-mute").setAttribute("aria-pressed", String(muted));
 $("stat-lives").hidden = !(CONFIG.lives > 0);
 if (CONFIG.extra) { $("stat-extra").hidden = false; $("extra-k").textContent = CONFIG.extra; }
 document.title = document.title || "Game";
+buildControls();
 resize();
 state = newState();
 showOverlay(document.title, CONFIG.intro || "", "", "Play");
 hud();
-window.game = { get state() { return state; }, get phase() { return phase; }, start: begin, pause: togglePause, config: CONFIG };
+window.game = {
+  get state() { return state; }, get phase() { return phase; }, get score() { return score; },
+  start: begin, pause: togglePause, config: CONFIG, sfx: sfx, burst: burst, input: input
+};
 requestAnimationFrame(frame);
 })();
 </script>

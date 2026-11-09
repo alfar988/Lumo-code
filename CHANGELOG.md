@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.8.0] - 2026-11-09
+
+### Added
+- **2D video with Python.** New `render_video` tool: runs an animation script written with the bundled `lumovideo` library and produces a playable MP4 (H.264 + AAC, faststart) inside the workspace, then probes it and returns checks (blank frames, motion, brightness, sound). `video_info` inspects any video. Both ask permission like `run_python`, stay inside the workspace, and are offered in the strictest limit saver only when the request mentions video.
+- `videokit/lumovideo.py`: one file, Pillow + ffmpeg only. Canvas with camera, shake and parallax, easing and keyframes, scenes with ten transitions, synthesised sound effects and music, a stickman rig (30 poses, 20 moves, weapons), a fight director (`Fight.auto` or scripted: blocks, dodges, hit stop, slow-motion K.O., health bars, stages), typewriter, particles, bar chart, subtitles, automatic frame checks, a GIF fallback without ffmpeg and `--check` / `--selftest`.
+- New `video-skill` (workflow, defaults, library reference, fight choreography, other video kinds, craft rules, troubleshooting, examples executed by the tests) and three templates: `video-stickman-fight`, `video-explainer`, `video-kinetic-text`.
+- Eight new game templates on the engine kit: `game-pong`, `game-shooter`, `game-asteroids`, `game-tetris`, `game-memory`, `game-racing`, `game-platformer`, `game-tower-defense`.
+- The prompt tells the model to make a video only when asked and never to add extra videos, GIFs, music or files.
+
+### Changed
+- The engine kit is now version 2: on-screen buttons built from `CONFIG.controls` (`dpad`, `lr`, `lr-action`, `action`, `stick`, `none` or custom buttons), a touch stick, edge-triggered keys (`pressed`), particles, floating text, screen shake, flash, named sound effects, saved mute setting, `swipe()`, helper maths, a live region for screen readers, focus on the overlay button and protection against a key press and a click both starting the game twice. A frame error no longer stops the loop.
+- `game-snake`, `game-breakout`, `game-runner` and `game-flappy` were rebuilt on it: timed bonus food, power-ups and level patterns, duck and flying obstacles with coins and parallax, pipes with caps and moving pipes.
+- The template list in the system prompt is shorter (default file and the usual variables are stated once), which saves tokens on every request even with 27 templates.
+
 ## [1.7.0] - 2026-11-07
 
 ### Added

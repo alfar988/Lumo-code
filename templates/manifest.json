@@ -211,69 +211,272 @@
     "game-snake": {
       "file": "game-snake.html",
       "default_path": "index.html",
-      "desc": "grid snake that speeds up as it grows (swipe, arrow keys, WASD, on-screen arrows, wall and self collision, best score)",
+      "desc": "grid snake that speeds up as it grows (swipe, arrows, WASD, d-pad, timed bonus food, particles, best score)",
       "vars": {
-        "TITLE": "Snake",
-        "ACCENT": "#3ddc97",
+        "TITLE": "Neon Snake",
+        "ACCENT": "#35c48f",
         "LANG": "en"
       },
-      "guide": "Keep the engine kit at the bottom of the script (canvas scaling, loop, input, HUD, overlay, best score, sound). Replace CONFIG, newState(), update() and draw() with your own food, theme and speed rules.",
+      "guide": "Keep the engine kit and the queued turns. Replace the theme, the food and the art.",
       "min_novelty": 0.3,
       "customize": [
-        "Change the creature, the food and the board to the request (a worm, a train, a river of boats), with matching colors and a speed curve that suits it.",
-        "Add only the mechanics the request names or clearly implies; leave the rest out.",
-        "Keep the first-frame draw, the 44px touch targets, the pause when the page is hidden and the reduced-motion rule."
+        "Make it the game the user described: the theme, what the snake eats and the rules come from the request. Remove template mechanics that do not belong; add only mechanics the request names or clearly implies.",
+        "Redraw the snake, the food and the board with art that fits the theme (not plain squares) and keep the grid readable.",
+        "Rework the intro, help text and game-over message to match the theme, in the user's language.",
+        "Tune speed, growth and the bonus food to the difficulty the user described."
       ]
     },
     "game-breakout": {
       "file": "game-breakout.html",
       "default_path": "index.html",
-      "desc": "paddle, ball and bricks (drag or keys, angle depends on where the ball hits the paddle, levels, three lives)",
+      "desc": "brick breaker (drag or keys, ball angle by hit position, level patterns, tough bricks, falling power-ups: wide paddle, slow ball, multiball, extra life)",
       "vars": {
         "TITLE": "Brick Break",
-        "ACCENT": "#5ccfe6",
+        "ACCENT": "#35c48f",
         "LANG": "en"
       },
-      "guide": "Keep the engine kit at the bottom of the script (canvas scaling, loop, input, HUD, overlay, best score, sound). Replace CONFIG, newState(), update() and draw() with your own brick layout, colors and power-ups.",
+      "guide": "Keep the engine kit and the ball physics. Replace the theme, the brick layouts and the power-ups.",
       "min_novelty": 0.3,
       "customize": [
-        "Change the bricks, the paddle and the ball to the request's theme (planks, bubbles, ice blocks) and set the layouts per level.",
-        "Add only the mechanics the request names or clearly implies; leave the rest out.",
-        "Keep the first-frame draw, the 44px touch targets, the pause when the page is hidden and the reduced-motion rule."
+        "Make it the game the user described: theme, brick layouts and rules come from the request. Remove power-ups that do not belong; add only mechanics the request names or clearly implies.",
+        "Redraw the paddle, ball and bricks to fit the theme and give each level the look the user described.",
+        "Rework the intro, help text and game-over message in the user's language.",
+        "Tune ball speed, lives and the drop rate to the difficulty the user described."
       ]
     },
     "game-runner": {
       "file": "game-runner.html",
       "default_path": "index.html",
-      "desc": "endless runner with one-button jump (obstacles that speed up, distance score, parallax ground)",
+      "desc": "endless runner (jump with variable height, duck under flying obstacles, coins, speed ramp, parallax hills, day-night shift)",
       "vars": {
-        "TITLE": "Sprint",
-        "ACCENT": "#ffb454",
+        "TITLE": "Sprint Run",
+        "ACCENT": "#35c48f",
         "LANG": "en"
       },
-      "guide": "Keep the engine kit at the bottom of the script (canvas scaling, loop, input, HUD, overlay, best score, sound). Replace CONFIG, newState(), update() and draw() with your own runner, obstacles and backdrop.",
+      "guide": "Keep the engine kit, the jump and duck physics and the spawn rhythm. Replace the character, the obstacles and the world.",
       "min_novelty": 0.3,
       "customize": [
-        "Change the runner, the obstacles and the scenery to the request (a cat on rooftops, a rocket in an asteroid belt) and tune the speed curve.",
-        "Add only the mechanics the request names or clearly implies; leave the rest out.",
-        "Keep the first-frame draw, the 44px touch targets, the pause when the page is hidden and the reduced-motion rule."
+        "Make it the game the user described: the runner, the obstacles, the setting and the goal come from the request. Remove template mechanics that do not belong; add only mechanics the request names or clearly implies.",
+        "Redraw the runner, the obstacles and the backdrop to fit the theme (canvas paths, not plain boxes) and keep the ground line readable.",
+        "Rework the intro, help text and game-over message in the user's language.",
+        "Tune speed, jump height and spawn spacing to the difficulty the user described; check that every obstacle can be passed."
       ]
     },
     "game-flappy": {
       "file": "game-flappy.html",
       "default_path": "index.html",
-      "desc": "one-tap flyer through gaps in pipes (gravity, flap impulse, gap that stays fair, pass-by scoring)",
+      "desc": "one-button flyer (tap to flap, pipes with caps, gap that narrows, moving pipes later, bird tilts with speed, parallax clouds)",
       "vars": {
-        "TITLE": "Flap",
-        "ACCENT": "#ffd166",
+        "TITLE": "Sky Hop",
+        "ACCENT": "#35c48f",
         "LANG": "en"
       },
-      "guide": "Keep the engine kit at the bottom of the script (canvas scaling, loop, input, HUD, overlay, best score, sound). Replace CONFIG, newState(), update() and draw() with your own flyer, obstacles and theme.",
+      "guide": "Keep the engine kit, the flap physics and the pipe spawner. Replace the character, the obstacles and the world.",
       "min_novelty": 0.3,
       "customize": [
-        "Change the flyer, the obstacles and the world to the request (a balloon between towers, a fish between reeds) and the colors to match.",
-        "Add only the mechanics the request names or clearly implies; leave the rest out.",
-        "Keep the first-frame draw, the 44px touch targets, the pause when the page is hidden and the reduced-motion rule."
+        "Make it the game the user described: the flyer, the obstacles, the setting and the goal come from the request. Remove template mechanics that do not belong; add only mechanics the request names or clearly implies.",
+        "Redraw the flyer, the obstacles and the scenery to fit the theme (canvas paths, not plain boxes).",
+        "Rework the intro, help text and game-over message in the user's language.",
+        "Tune gravity, gap and speed to the difficulty the user described; check that every gap can be passed."
+      ]
+    },
+    "game-pong": {
+      "file": "game-pong.html",
+      "default_path": "index.html",
+      "desc": "pong against an AI that gets better each round (drag or keys, ball angle and spin from the paddle, first to 5, three goals you may concede)",
+      "vars": {
+        "TITLE": "Paddle Duel",
+        "ACCENT": "#35c48f",
+        "LANG": "en"
+      },
+      "guide": "Keep the engine kit, the rebound maths and the AI loop. Replace the theme, the paddles and the rules of a round.",
+      "min_novelty": 0.3,
+      "customize": [
+        "Make it the game the user described: the theme, the opponent and the rules of a round come from the request. Remove template mechanics that do not belong; add only mechanics the request names or clearly implies.",
+        "Redraw the paddles, the ball and the court to fit the theme and keep the ball easy to follow.",
+        "Rework the intro, help text and result messages in the user's language.",
+        "Tune ball speed, paddle size and the AI to the difficulty the user described."
+      ]
+    },
+    "game-shooter": {
+      "file": "game-shooter.html",
+      "default_path": "index.html",
+      "desc": "vertical space shooter (touch-stick or keys, auto-fire, drones, zigzaggers, tanks, a boss every 4th wave, power-ups: spread, shield, extra life, limited bombs)",
+      "vars": {
+        "TITLE": "Starfall",
+        "ACCENT": "#35c48f",
+        "LANG": "en"
+      },
+      "guide": "Keep the engine kit, the stick input, the bullet and collision loops and the wave timer. Replace the ship, the enemy kinds, the boss and the art.",
+      "min_novelty": 0.3,
+      "customize": [
+        "Make it the game the user described: the ship, the enemies, the boss and the setting come from the request. Remove enemy kinds and power-ups that do not belong; add only ones the request names or clearly implies.",
+        "Redraw the ship, the enemies, the bullets and the background to fit the theme (canvas paths, not plain shapes) and keep bullets easy to see.",
+        "Rework the intro, help text and game-over message in the user's language.",
+        "Tune fire rate, enemy speed and wave length to the difficulty the user described; check that a bullet pattern can always be dodged."
+      ]
+    },
+    "game-asteroids": {
+      "file": "game-asteroids.html",
+      "default_path": "index.html",
+      "desc": "asteroids (rotate, thrust with drift and drag, fire, rocks that split in two, wrap-around screen, waves, short invincibility after a hit)",
+      "vars": {
+        "TITLE": "Rock Field",
+        "ACCENT": "#35c48f",
+        "LANG": "en"
+      },
+      "guide": "Keep the engine kit, the ship physics and the split rule. Replace the theme, the ship and the rocks.",
+      "min_novelty": 0.3,
+      "customize": [
+        "Make it the game the user described: the ship, what it shoots at and the rules come from the request. Remove template mechanics that do not belong; add only mechanics the request names or clearly implies.",
+        "Redraw the ship, the rocks and the bullets to fit the theme and keep the outlines readable on a phone.",
+        "Rework the intro, help text and game-over message in the user's language.",
+        "Tune turn speed, thrust and rock speed to the difficulty the user described."
+      ]
+    },
+    "game-tetris": {
+      "file": "game-tetris.html",
+      "default_path": "index.html",
+      "desc": "falling-block puzzle (7-piece bag, rotation with wall kicks, ghost piece, soft and hard drop, line clears, levels, next piece, touch swipe and tap)",
+      "vars": {
+        "TITLE": "Stack Blocks",
+        "ACCENT": "#35c48f",
+        "LANG": "en"
+      },
+      "guide": "Keep the engine kit and the pure board functions. Replace the theme, the piece set and the scoring.",
+      "min_novelty": 0.3,
+      "customize": [
+        "Make it the game the user described: the theme, the pieces and the scoring come from the request. Remove template mechanics that do not belong; add only mechanics the request names or clearly implies.",
+        "Redraw the cells, the board frame and the side panel to fit the theme and keep the piece colors easy to tell apart.",
+        "Rework the intro, help text and game-over message in the user's language.",
+        "Tune the fall speed curve and the line-clear points to the difficulty the user described."
+      ]
+    },
+    "game-memory": {
+      "file": "game-memory.html",
+      "default_path": "index.html",
+      "desc": "card-matching memory game (flip animation, five growing boards, countdown that gains time on a match, streak bonus, tap or keyboard cursor, 12 drawn symbols)",
+      "vars": {
+        "TITLE": "Pair Up",
+        "ACCENT": "#35c48f",
+        "LANG": "en"
+      },
+      "guide": "Keep the engine kit, the flip and match rules and the layout maths. Replace the card art, the symbols and the board sizes.",
+      "min_novelty": 0.3,
+      "customize": [
+        "Make it the game the user described: the card art, the symbols and the rules come from the request. Remove template mechanics that do not belong; add only mechanics the request names or clearly implies.",
+        "Redraw the card back, the card face and the symbols to fit the theme and keep every pair easy to tell apart.",
+        "Rework the intro, help text and game-over message in the user's language.",
+        "Tune the board sizes, the time per level and the streak bonus to the difficulty the user described."
+      ]
+    },
+    "game-racing": {
+      "file": "game-racing.html",
+      "default_path": "index.html",
+      "desc": "top-down traffic racer (steer by drag or keys, four lanes, traffic at different speeds that always leaves a gap, nitro with a meter, close-pass bonus, scrolling road)",
+      "vars": {
+        "TITLE": "Night Drive",
+        "ACCENT": "#35c48f",
+        "LANG": "en"
+      },
+      "guide": "Keep the engine kit, the steering, the spawner rule and the close-pass check. Replace the vehicles, the road and the scenery.",
+      "min_novelty": 0.3,
+      "customize": [
+        "Make it the game the user described: the vehicles, the road, the setting and the goal come from the request. Remove template mechanics that do not belong; add only mechanics the request names or clearly implies.",
+        "Redraw the player's vehicle, the traffic, the road and the roadside to fit the theme (canvas paths, not plain boxes).",
+        "Rework the intro, help text and game-over message in the user's language.",
+        "Tune speed ramp, traffic density and nitro to the difficulty the user described; check that a free lane always exists."
+      ]
+    },
+    "game-platformer": {
+      "file": "game-platformer.html",
+      "default_path": "index.html",
+      "desc": "side-scrolling platformer with generated levels (tile collision, variable jump height, coyote time and jump buffer, patrolling enemies you can stomp, spikes, pits, coins, checkpoints, goal flag, camera follow)",
+      "vars": {
+        "TITLE": "Ledge Runner",
+        "ACCENT": "#35c48f",
+        "LANG": "en"
+      },
+      "guide": "Keep the engine kit, the tile physics and the generator limits (gap and step sizes). Replace the hero, the tiles, the enemies and the art.",
+      "min_novelty": 0.3,
+      "customize": [
+        "Make it the game the user described: the hero, the enemies, the hazards, the setting and the goal come from the request. Remove template mechanics that do not belong; add only mechanics the request names or clearly implies.",
+        "Redraw the hero, the tiles, the enemies and the backdrop to fit the theme (canvas paths, not plain boxes) and keep the ground and hazards easy to read.",
+        "Rework the intro, help text and game-over message in the user's language.",
+        "If you change jump power, speed or the generator, keep every gap and step jumpable (gap of 3 tiles or less, step of 2 tiles or less)."
+      ]
+    },
+    "game-tower-defense": {
+      "file": "game-tower-defense.html",
+      "default_path": "index.html",
+      "desc": "tower defense on a winding path (tap to build darts, frost and cannons, upgrade or sell towers, 15 waves with grunts, runners, brutes and bosses, slow and splash effects, base health, auto-start countdown)",
+      "vars": {
+        "TITLE": "Lane Guard",
+        "ACCENT": "#35c48f",
+        "LANG": "en"
+      },
+      "guide": "Keep the engine kit, the path walking, the targeting and projectile loops and the tap-to-build flow. Replace the theme, the tower and enemy tables and the map.",
+      "min_novelty": 0.3,
+      "customize": [
+        "Make it the game the user described: the towers, the enemies, the map and the goal come from the request. Remove tower and enemy kinds that do not belong; add only ones the request names or clearly implies.",
+        "Redraw the towers, the enemies, the path and the toolbar to fit the theme (canvas paths, not plain shapes) and keep the range ring and the health bars readable.",
+        "Rework the intro, help text and result messages in the user's language.",
+        "Tune costs, damage, enemy health and wave size to the difficulty the user described; check that wave 1 can be beaten with the starting gold."
+      ]
+    },
+    "video-stickman-fight": {
+      "file": "video-stickman-fight.py",
+      "default_path": "videos/fight.py",
+      "desc": "2D stickman fight video in Python (lumovideo): automatic or scripted fight, stages, hit effects, camera, sound, health bars, K.O., MP4 via render_video",
+      "vars": {
+        "TITLE": "ROUND 1",
+        "NAME_A": "BLUE",
+        "NAME_B": "RED",
+        "STAGE": "city_night",
+        "SECONDS": "14",
+        "WINNER": "a"
+      },
+      "guide": "Keep the imports, build(), selftest() and main(). Change the settings; use f.auto for a complete fight or script moments by hand. Then call render_video.",
+      "min_novelty": 0.0,
+      "customize": [
+        "Use the names, colours, stage and length the user gave; keep the video as long as the request says.",
+        "Add scripted moments (f.attack, f.block, f.dodge, f.text) only when the user described them; otherwise keep f.auto.",
+        "Add background music only when the user asked for music or a mood (MUSIC)."
+      ]
+    },
+    "video-explainer": {
+      "file": "video-explainer.py",
+      "default_path": "videos/explainer.py",
+      "desc": "explainer video in Python (lumovideo): title card, point scenes with typewriter text, optional animated bar chart, outro, whoosh and pop sounds, 16:9 or vertical",
+      "vars": {
+        "TITLE": "How it works",
+        "SUBTITLE": "Three things to know"
+      },
+      "guide": "Keep the imports, make_video(), selftest() and main(). Replace TITLE, SUBTITLE, POINTS and DATA with the user's content, then call render_video.",
+      "min_novelty": 0.0,
+      "customize": [
+        "Write the points and the numbers from the user's request: one idea per scene, one short line each; remove the chart when the user gave no numbers.",
+        "Use the user's language for every line of text and keep each line short enough to read at phone size.",
+        "Set VERTICAL for Reels, Shorts, TikTok or story formats."
+      ]
+    },
+    "video-kinetic-text": {
+      "file": "video-kinetic-text.py",
+      "default_path": "videos/kinetic.py",
+      "desc": "kinetic typography video in Python (lumovideo): one punchy line per scene with pop-in, slide and zoom transitions, sound, optional music, 16:9 or vertical",
+      "vars": {
+        "TITLE": "Kinetic words",
+        "LINE_1": "Make it move",
+        "LINE_2": "Make it count",
+        "LINE_3": "Make it yours",
+        "LINE_4": "Press play"
+      },
+      "guide": "Keep the imports, make_video(), selftest() and main(). Replace LINES with the user's words (add or remove lines freely), then call render_video.",
+      "min_novelty": 0.0,
+      "customize": [
+        "Use the exact words the user gave, one short line per scene; add or remove entries in LINES to match.",
+        "Pick a PALETTE that suits the mood the user described.",
+        "Add MUSIC only when the user asked for music; set VERTICAL for Reels, Shorts or TikTok."
       ]
     }
   }

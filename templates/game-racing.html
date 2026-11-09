@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<!--
+  TEMPLATE game-racing: top-down traffic racer (steer by drag or keys, four lanes, traffic at different speeds that always leaves a gap, nitro with a meter, close-pass bonus, scrolling road)
+  Engine kit v2 (keep): DPR-aware canvas scaling, clamped time step, keys + pressed keys + pointer + touch stick + on-screen buttons, HUD, start/pause/game-over
+  overlay, best score (localStorage, guarded), sound effects, particles, floating text, screen shake (all off for reduced motion).
+  Traffic is a list of cars with a lane and a speed; the spawner never blocks every lane. Replace the cars, the road and the scoring.
+  Adapt it by replacing CONFIG, newState(), update() and draw(). Keep it ONE file.
+-->
+<html lang="__LANG__">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0f1318">
+<title>__TITLE__</title>
+<style>
+  :root {
+    --bg: #0f1318; --panel: #171d25; --line: #263040; --ink: #eef2f6; --muted: #9aa7b6;
+    --accent: __ACCENT__; --accent-ink: #08140f; --danger: #ff6b6b; --radius: 14px;
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; background: var(--bg); color: var(--ink); font-family: var(--font); overflow: hidden; overscroll-behavior: none; }
+  body {
+    height: 100vh; height: 100dvh; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  #stage { position: relative; width: 100%; height: 100%; display: grid; place-items: center; }
+  canvas { display: block; background: #0b0f13; border-radius: 8px; touch-action: none; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #hud { position: absolute; top: max(env(safe-area-inset-top), 8px); left: 8px; right: 8px; display: flex; gap: 12px; align-items: center; pointer-events: none; z-index: 2; }
+  .stat { display: flex; flex-direction: column; line-height: 1.1; min-width: 52px; }
+  .stat .k { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .stat .v { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .pips { color: var(--danger); letter-spacing: 2px; font-size: 16px; min-height: 24px; }
+  #hud .grow { flex: 1; }
+  .icon { pointer-events: auto; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: rgba(23,29,37,.85); color: var(--ink);
+          display: grid; place-items: center; cursor: pointer; }
+  .icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .icon:hover { border-color: var(--accent); }
+  .icon[aria-pressed="true"] { color: var(--muted); }
+  .icon:focus-visible, .btn:focus-visible, .pad:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .controls { position: absolute; left: 0; right: 0; bottom: max(env(safe-area-inset-bottom), 12px); display: flex; justify-content: space-between; align-items: flex-end;
+              padding: 0 14px; gap: 10px; pointer-events: none; z-index: 2; }
+  .controls .group { display: flex; gap: 10px; }
+  .pad { pointer-events: auto; width: 64px; height: 64px; border-radius: 50%; border: 1px solid var(--line); background: rgba(23,29,37,.8); color: var(--ink);
+         font: 700 20px var(--font); cursor: pointer; touch-action: none; display: grid; place-items: center; }
+  .pad.act { width: 76px; height: 76px; border-color: var(--accent); font-size: 22px; }
+  .pad:active { background: var(--accent); color: var(--accent-ink); }
+  #overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(8,11,15,.72); z-index: 3; padding: 16px; }
+  #overlay[hidden] { display: none; }
+  .card { width: min(92vw, 380px); background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px 22px; text-align: center; display: grid; gap: 12px; }
+  .card h1 { font-size: clamp(24px, 6vw, 32px); letter-spacing: -.01em; }
+  .card p { color: var(--muted); font-size: 15px; line-height: 1.5; }
+  .card .big { color: var(--ink); font-size: 36px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .badge { justify-self: center; padding: 4px 12px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 13px; font-weight: 700; }
+  .btn { min-height: 48px; padding: 0 22px; border: 0; border-radius: 12px; background: var(--accent); color: var(--accent-ink); font: 700 16px var(--font); cursor: pointer; touch-action: manipulation; }
+  .btn:hover { filter: brightness(1.08); }
+  .btn:active { transform: translateY(1px); }
+  @media (prefers-reduced-motion: reduce) { .btn:active { transform: none; } }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="game" aria-label="Game area"></canvas>
+  <header id="hud">
+    <div class="stat"><span class="k">Score</span><span class="v" id="hud-score">0</span></div>
+    <div class="stat"><span class="k">Best</span><span class="v" id="hud-best">0</span></div>
+    <div class="stat" id="stat-lives" hidden><span class="k">Lives</span><span class="v pips" id="hud-lives" role="img" aria-label="lives left"></span></div>
+    <div class="stat" id="stat-extra" hidden><span class="k" id="extra-k">Time</span><span class="v" id="hud-extra">0</span></div>
+    <span class="grow"></span>
+    <button class="icon" id="btn-mute" type="button" aria-label="Toggle sound" aria-pressed="false">
+      <svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+    </button>
+    <button class="icon" id="btn-pause" type="button" aria-label="Pause">
+      <svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg>
+    </button>
+  </header>
+  <div class="controls" id="controls"></div>
+  <div id="live" class="sr" aria-live="polite"></div>
+  <div id="overlay" role="dialog" aria-modal="true" aria-labelledby="ov-title">
+    <div class="card">
+      <h1 id="ov-title">__TITLE__</h1>
+      <div class="badge" id="ov-badge" hidden></div>
+      <div class="big" id="ov-big" hidden></div>
+      <p id="ov-text"></p>
+      <p id="ov-help"></p>
+      <button class="btn" id="ov-btn" type="button">Play</button>
+    </div>
+  </div>
+</div>
+<noscript>This game needs JavaScript.</noscript>
+<script>
+(function () {
+"use strict";
+const CONFIG = { id: "racing", width: 360, height: 480, lives: 0, extra: "km/h", controls: "lr", buttons: [[["ArrowLeft", "\u2190", "Left"], ["ArrowRight", "\u2192", "Right"]], [["Space", "N", "Nitro"]]], intro: "Weave through the traffic. Close passes score extra.", help: "Drag or use the arrows to steer. Hold Space or the N button for nitro." };
+const ROAD_L = 60, ROAD_R = 300, LANES = 4, PY = 392;
+const BODY = ["#ff6b6b", "#ffb454", "#5ccfe6", "#a78bfa", "#7bd88f", "#f78fb3"];
+
+function laneX(i) { return ROAD_L + (ROAD_R - ROAD_L) / LANES * (i + 0.5); }
+function newState() { return { x: 180, speed: 200, dist: 0, cars: [], next: 0.8, nitro: 1, boost: false, t: 0, bonus: 0 }; }
+function onStart() { setExtra(90); }
+function spawn(s) {
+  const lane = rint(0, LANES - 1), busy = {};
+  s.cars.forEach((c) => { if (c.y < 140) busy[c.lane] = true; });
+  if (busy[lane] || Object.keys(busy).length >= LANES - 1) return;                      // never fill every lane near the top
+  s.cars.push({ lane: lane, x: laneX(lane), y: -60, v: rnd(70, 150), color: pick(BODY), passed: false });
+}
+function update(dt) {
+  const s = state, dir = input();
+  s.t += dt;
+  s.x += dir.x * 250 * dt;
+  if (pointer.down) s.x += clamp(pointer.x - s.x, -300 * dt, 300 * dt);
+  s.x = clamp(s.x, ROAD_L + 16, ROAD_R - 16);
+  s.boost = !!(keys.Space || keys.KeyZ || keys.KeyX) && s.nitro > 0.02;
+  s.nitro = clamp(s.nitro + (s.boost ? -0.45 : 0.18) * dt, 0, 1);
+  const target = Math.min(430, 200 + s.t * 6) + (s.boost ? 110 : 0);
+  s.speed += (target - s.speed) * Math.min(1, dt * 3);
+  s.dist += s.speed * dt;
+  score = Math.floor(s.dist / 12) + s.bonus; hud(); setExtra(Math.round(s.speed * 0.45));
+  s.next -= dt;
+  if (s.next <= 0) { spawn(s); s.next = rnd(0.45, 0.9) * (300 / s.speed); }
+  const me = { x: s.x - 12, y: PY - 22, w: 24, h: 44 };
+  for (const c of s.cars) {
+    c.y += (s.speed - c.v) * dt;
+    if (overlap(me, { x: c.x - 13, y: c.y - 22, w: 26, h: 44 })) { shake(10); burst(s.x, PY, "#ffb454", 24, 200); burst(c.x, c.y, c.color, 14, 140); gameOver(); return; }
+    if (!c.passed && c.y > PY) {
+      c.passed = true;
+      if (Math.abs(c.x - s.x) < 44) { s.bonus += 25; sfx("coin"); floatText(s.x, PY - 40, "Close! +25", "#ffd166"); }
+    }
+  }
+  s.cars = s.cars.filter((c) => c.y < H + 80);
+  if (s.boost && Math.random() < 0.6) burst(s.x + rnd(-5, 5), PY + 26, "#ffb454", 1, 70);
+}
+function car(x, y, color, player) {
+  rrect(x - 13, y - 22, 26, 46, 7, color);
+  rrect(x - 9, y - 12, 18, 12, 3, "rgba(8,12,18,.75)");
+  rrect(x - 9, y + 6, 18, 8, 3, "rgba(8,12,18,.55)");
+  ctx.fillStyle = player ? "#fff6cf" : "#ffe9a8"; ctx.fillRect(x - 11, y - 22, 6, 3); ctx.fillRect(x + 5, y - 22, 6, 3);
+  ctx.fillStyle = "#ff3b3b"; ctx.fillRect(x - 11, y + 21, 6, 2); ctx.fillRect(x + 5, y + 21, 6, 2);
+}
+function draw() {
+  const s = state, off = s.dist % 60;
+  ctx.fillStyle = "#0f1a14"; ctx.fillRect(0, 0, ROAD_L, H); ctx.fillRect(ROAD_R, 0, W - ROAD_R, H);
+  ctx.fillStyle = "#171d25"; ctx.fillRect(ROAD_L, 0, ROAD_R - ROAD_L, H);
+  ctx.fillStyle = "#eef2f6"; ctx.fillRect(ROAD_L - 3, 0, 3, H); ctx.fillRect(ROAD_R, 0, 3, H);
+  ctx.fillStyle = "rgba(255,255,255,.35)";
+  for (let l = 1; l < LANES; l++) for (let y = -60 + off; y < H; y += 60) ctx.fillRect(ROAD_L + (ROAD_R - ROAD_L) / LANES * l - 1.5, y, 3, 28);
+  for (let y = -80 + (s.dist * 0.9) % 80; y < H; y += 80) { rrect(18, y, 6, 14, 3, "#2b3a30"); rrect(W - 24, y + 30, 6, 14, 3, "#2b3a30"); }
+  const g = ctx.createLinearGradient(0, PY - 140, 0, PY - 20); g.addColorStop(0, "rgba(255,246,207,0)"); g.addColorStop(1, "rgba(255,246,207,.12)");
+  ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(s.x - 10, PY - 20); ctx.lineTo(s.x - 40, PY - 140); ctx.lineTo(s.x + 40, PY - 140); ctx.lineTo(s.x + 10, PY - 20); ctx.closePath(); ctx.fill();
+  s.cars.forEach((c) => car(c.x, c.y, c.color, false));
+  if (s.boost) { ctx.beginPath(); ctx.moveTo(s.x - 6, PY + 24); ctx.lineTo(s.x, PY + 24 + 16 + Math.random() * 10); ctx.lineTo(s.x + 6, PY + 24); ctx.fillStyle = "#ffb454"; ctx.fill(); }
+  car(s.x, PY, ACCENT, true);
+  rrect(10, H - 18, 80, 6, 3, "rgba(255,255,255,.12)"); rrect(10, H - 18, 80 * s.nitro, 6, 3, s.boost ? "#ffb454" : "#5ccfe6");
+  text("NITRO", 100, H - 15, 11, "#9aa7b6", "left");
+}
+
+/* ===================== ENGINE KIT v2 (keep): canvas scaling, loop, input (keys, pointer, stick, buttons), HUD, overlay,
+   best score, sound effects, particles, floating text, screen shake. Replace CONFIG, newState(), update() and draw(). ===================== */
+const W = CONFIG.width, H = CONFIG.height, TOP = CONFIG.top === undefined ? 56 : CONFIG.top, ACCENT = "__ACCENT__";   // TOP: band for the HUD
+const STORE = "lumo-" + (CONFIG.id || "game") + "-best";
+const $ = (id) => document.getElementById(id);
+const canvas = $("game"), ctx = canvas.getContext("2d");
+const view = { scale: 1, dpr: 1 };
+const keys = {}, pressed = {};                       // keys: held (KeyboardEvent.code); pressed: true for one frame after the key goes down
+const pointer = { x: W / 2, y: H / 2, sx: 0, sy: 0, down: false, tapped: false, released: false };
+const STICK_R = 46;
+const calm = (function () { try { return !!window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { return false; } })();
+let phase = "ready", state = null, score = 0, best = 0, lives = 0, last = 0, beganAt = -1000, muted = false, audio = null;
+let shakeT = 0, shakeMag = 0, flashA = 0, flashC = "#ffffff";
+const parts = [], floats = [];
+
+/* ---- helpers ---- */
+function resize() {
+  const vw = Math.max(1, window.innerWidth), vh = Math.max(1, window.innerHeight);
+  view.scale = Math.min(vw / W, vh / (H + TOP));
+  view.dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.style.width = Math.floor(W * view.scale) + "px";
+  canvas.style.height = Math.floor((H + TOP) * view.scale) + "px";
+  canvas.width = Math.max(1, Math.floor(W * view.scale * view.dpr));
+  canvas.height = Math.max(1, Math.floor((H + TOP) * view.scale * view.dpr));
+}
+function rnd(a, b) { return a + Math.random() * (b - a); }
+function rint(a, b) { return Math.floor(rnd(a, b + 1)); }                       // whole number from a to b, both included
+function pick(list) { return list[Math.floor(Math.random() * list.length)]; }
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function dist(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by); }
+function overlap(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }   // rectangles {x, y, w, h}
+function text(str, x, y, size, color, align) {
+  ctx.font = "700 " + size + "px system-ui, sans-serif"; ctx.fillStyle = color || "#eef2f6"; ctx.textAlign = align || "center"; ctx.textBaseline = "middle";
+  ctx.fillText(str, x, y);
+}
+function rrect(x, y, w, h, r, color) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); ctx.fillStyle = color; ctx.fill();
+}
+function circle(x, y, r, color) { ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); }
+function swipe(th) {          // "left" | "right" | "up" | "down" once per drag of at least th logical pixels, else null
+  if (!pointer.down) return null;
+  const dx = pointer.x - pointer.sx, dy = pointer.y - pointer.sy;
+  if (Math.abs(dx) < th && Math.abs(dy) < th) return null;
+  pointer.sx = pointer.x; pointer.sy = pointer.y;
+  return Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up");
+}
+function input() {            // one reading for keys, the touch stick (CONFIG.controls = "stick") and the action keys: {x, y, action}, x and y from -1 to 1
+  let x = (keys.ArrowRight || keys.KeyD ? 1 : 0) - (keys.ArrowLeft || keys.KeyA ? 1 : 0);
+  let y = (keys.ArrowDown || keys.KeyS ? 1 : 0) - (keys.ArrowUp || keys.KeyW ? 1 : 0);
+  let sx = 0, sy = 0;
+  if (CONFIG.controls === "stick" && pointer.down) {
+    const dx = pointer.x - pointer.sx, dy = pointer.y - pointer.sy, d = Math.hypot(dx, dy);
+    if (d > 6) { const k = Math.min(1, d / STICK_R) / d; sx = dx * k; sy = dy * k; }
+  }
+  if (x && y) { x *= Math.SQRT1_2; y *= Math.SQRT1_2; }                        // diagonal keys are not faster
+  if (Math.abs(sx) > Math.abs(x)) x = sx;
+  if (Math.abs(sy) > Math.abs(y)) y = sy;
+  return { x: x, y: y, action: !!(keys.Space || keys.KeyZ || keys.KeyX || keys.KeyJ) };
+}
+
+/* ---- sound: tone(), noise() and named effects. All optional and silent when muted or when audio is blocked ---- */
+function ac() {
+  if (!audio) { try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audio = null; } }
+  if (audio && audio.state === "suspended" && audio.resume) { try { audio.resume(); } catch (e) { /* needs a user gesture first */ } }
+  return audio;
+}
+function tone(freq, dur, type, vol, delay, to) {
+  if (muted) return;
+  try {
+    const a = ac(); if (!a) return;
+    const t0 = a.currentTime + (delay || 0), o = a.createOscillator(), g = a.createGain();
+    o.type = type || "square"; o.frequency.setValueAtTime(freq, t0);
+    if (to) o.frequency.exponentialRampToValueAtTime(Math.max(1, to), t0 + dur);
+    g.gain.setValueAtTime(vol || 0.05, t0); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(a.destination); o.start(t0); o.stop(t0 + dur + 0.02);
+  } catch (e) { /* sound is optional */ }
+}
+function noise(dur, vol, delay) {
+  if (muted) return;
+  try {
+    const a = ac(); if (!a) return;
+    const n = Math.max(1, Math.floor(a.sampleRate * dur)), buf = a.createBuffer(1, n, a.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    const s = a.createBufferSource(), g = a.createGain();
+    s.buffer = buf; g.gain.value = vol || 0.06; s.connect(g); g.connect(a.destination); s.start(a.currentTime + (delay || 0));
+  } catch (e) { /* sound is optional */ }
+}
+const SFX = {
+  click: () => tone(660, 0.05, "square", 0.04),
+  tick: () => tone(1000, 0.03, "square", 0.03),
+  coin: () => { tone(880, 0.07, "square", 0.05); tone(1320, 0.1, "square", 0.05, 0.07); },
+  jump: () => tone(320, 0.16, "square", 0.05, 0, 760),
+  shoot: () => tone(880, 0.09, "sawtooth", 0.03, 0, 220),
+  hit: () => { noise(0.14, 0.08); tone(180, 0.12, "sawtooth", 0.05, 0, 60); },
+  boom: () => { noise(0.35, 0.1); tone(120, 0.3, "sawtooth", 0.06, 0, 40); },
+  power: () => { tone(440, 0.08, "triangle", 0.06); tone(660, 0.08, "triangle", 0.06, 0.08); tone(990, 0.12, "triangle", 0.06, 0.16); },
+  win: () => { [523, 659, 784, 1046].forEach((f, i) => tone(f, 0.14, "triangle", 0.06, i * 0.1)); },
+  lose: () => tone(300, 0.3, "sawtooth", 0.05, 0, 70)
+};
+function sfx(name) { if (SFX[name]) SFX[name](); }
+function beep(freq, dur) { tone(freq, dur || 0.08, "square", 0.05); }
+function buzz(ms) { try { if (!muted && navigator.vibrate) navigator.vibrate(ms || 20); } catch (e) { /* not supported */ } }
+
+/* ---- effects: burst(x, y, color, count, speed), floatText(x, y, text, color), shake(strength), flash(color). Off for reduced motion ---- */
+function burst(x, y, color, n, speed) {
+  n = calm ? Math.min(n || 12, 4) : (n || 12); speed = speed || 120;
+  for (let i = 0; i < n && parts.length < 320; i++) {
+    const a = Math.random() * Math.PI * 2, v = speed * (0.35 + Math.random() * 0.65);
+    parts.push({ x: x, y: y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0, max: 0.35 + Math.random() * 0.4, size: 2 + Math.random() * 2.5, color: color || ACCENT });
+  }
+}
+function floatText(x, y, str, color) { if (floats.length < 40) floats.push({ x: x, y: y, str: String(str), color: color || "#eef2f6", life: 0 }); }
+function shake(mag) { if (!calm) { shakeMag = Math.max(shakeMag, mag || 6); shakeT = 0.28; } }
+function flash(color) { if (!calm) { flashC = color || "#ffffff"; flashA = 0.35; } }
+function fxUpdate(dt) {
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i]; p.life += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.96; p.vy = p.vy * 0.96 + 90 * dt;
+    if (p.life >= p.max) parts.splice(i, 1);
+  }
+  for (let i = floats.length - 1; i >= 0; i--) { const f = floats[i]; f.life += dt; f.y -= 34 * dt; if (f.life > 0.9) floats.splice(i, 1); }
+  if (shakeT > 0) shakeT -= dt; else shakeMag = 0;
+  if (flashA > 0) flashA = Math.max(0, flashA - dt * 1.4);
+}
+function fxDraw() {
+  for (const p of parts) { ctx.globalAlpha = Math.max(0, 1 - p.life / p.max); ctx.fillStyle = p.color; ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size); }
+  ctx.globalAlpha = 1;
+  for (const f of floats) { ctx.globalAlpha = Math.max(0, 1 - f.life / 0.9); text(f.str, f.x, f.y, 14, f.color); }
+  ctx.globalAlpha = 1;
+}
+function drawStick() {        // the ring and knob of the touch stick
+  if (CONFIG.controls !== "stick" || !pointer.down || phase !== "playing") return;
+  const dx = pointer.x - pointer.sx, dy = pointer.y - pointer.sy, d = Math.hypot(dx, dy) || 1, k = Math.min(1, STICK_R / d);
+  ctx.globalAlpha = 0.28; ctx.lineWidth = 2; ctx.strokeStyle = "#eef2f6"; ctx.beginPath(); ctx.arc(pointer.sx, pointer.sy, STICK_R, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 0.5; circle(pointer.sx + dx * k, pointer.sy + dy * k, 14, "#eef2f6"); ctx.globalAlpha = 1;
+}
+
+/* ---- HUD, overlay, game flow ---- */
+function hud() {
+  $("hud-score").textContent = String(Math.floor(score));
+  $("hud-best").textContent = String(Math.max(best, Math.floor(score)));
+  if (CONFIG.lives > 0) $("hud-lives").textContent = "●".repeat(Math.max(0, lives)) + "○".repeat(Math.max(0, CONFIG.lives - lives));
+}
+function setExtra(v) { $("hud-extra").textContent = String(v); }
+function addScore(n) { score += n; hud(); }
+function announce(msg) { $("live").textContent = msg; }
+function saveBest() { try { localStorage.setItem(STORE, String(best)); } catch (e) { /* storage may be blocked */ } }
+function showOverlay(title, body, big, btn, badge) {
+  $("ov-title").textContent = title; $("ov-text").textContent = body || ""; $("ov-help").textContent = phase === "ready" ? (CONFIG.help || "") : "";
+  $("ov-big").hidden = !big; $("ov-big").textContent = big || ""; $("ov-badge").hidden = !badge; $("ov-badge").textContent = badge || "";
+  $("ov-btn").textContent = btn; $("overlay").hidden = false;
+  try { $("ov-btn").focus(); } catch (e) { /* focus is a convenience */ }
+}
+function hideOverlay() { $("overlay").hidden = true; }
+function begin() {
+  if (phase === "playing" && last - beganAt < 250) return;      // a key press and the focused button can both fire for one action
+  if (phase === "paused") { phase = "playing"; beganAt = last; hideOverlay(); return; }
+  state = newState(); score = 0; lives = CONFIG.lives || 0; phase = "playing"; beganAt = last; pointer.tapped = false;
+  parts.length = 0; floats.length = 0; shakeT = 0; shakeMag = 0; flashA = 0;
+  hideOverlay(); hud(); sfx("click");
+  if (typeof onStart === "function") onStart();
+}
+function togglePause() {
+  if (phase === "playing") { phase = "paused"; showOverlay("Paused", "", "", "Resume"); }
+  else if (phase === "paused") begin();
+}
+function gameOver(message, won) {
+  if (phase === "over") return;
+  phase = "over";
+  const fresh = score > best && score > 0;
+  if (score > best) { best = Math.floor(score); saveBest(); }
+  hud(); sfx(won ? "win" : "lose"); buzz(won ? 15 : 60);
+  showOverlay(won ? "You win!" : "Game over", (message ? message + " " : "") + "Best: " + best, String(Math.floor(score)), "Play again", fresh ? "New best!" : "");
+  announce((won ? "You win. " : "Game over. ") + "Score " + Math.floor(score));
+}
+function loseLife() {
+  lives -= 1; hud(); sfx("hit"); shake(6); buzz(30);
+  if (lives <= 0) gameOver();
+}
+function toggleMute() {
+  muted = !muted; $("btn-mute").setAttribute("aria-pressed", String(muted));
+  try { localStorage.setItem(STORE + "-muted", muted ? "1" : "0"); } catch (e) { /* storage may be blocked */ }
+}
+function frame(t) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(50, Math.max(0, t - last)) / 1000; last = t;
+  if (phase === "playing") update(dt);
+  if (phase === "playing" || phase === "over") fxUpdate(dt);
+  ctx.setTransform(view.scale * view.dpr, 0, 0, view.scale * view.dpr, 0, 0);
+  ctx.fillStyle = CONFIG.bg || "#0b0f13"; ctx.fillRect(0, 0, W, H + TOP);
+  ctx.translate(0, TOP);
+  if (shakeT > 0 && shakeMag) ctx.translate((Math.random() - 0.5) * shakeMag, (Math.random() - 0.5) * shakeMag);
+  draw(); fxDraw(); drawStick();
+  if (flashA > 0) { ctx.globalAlpha = flashA; ctx.fillStyle = flashC; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; }
+  pointer.tapped = false; pointer.released = false;
+  for (const k in pressed) pressed[k] = false;
+}
+
+/* ---- on-screen buttons: CONFIG.controls = "dpad" | "lr" | "lr-action" | "action" | "stick" | "none", or CONFIG.buttons = [[left group], [right group]] of [code, label, aria-label] ---- */
+const PRESETS = {
+  dpad: [[["ArrowLeft", "\u2190", "Left"], ["ArrowUp", "\u2191", "Up"]], [["ArrowDown", "\u2193", "Down"], ["ArrowRight", "\u2192", "Right"]]],
+  lr: [[["ArrowLeft", "\u2190", "Left"]], [["ArrowRight", "\u2192", "Right"]]],
+  "lr-action": [[["ArrowLeft", "\u2190", "Left"], ["ArrowRight", "\u2192", "Right"]], [["Space", CONFIG.actionLabel || "A", CONFIG.actionName || "Action"]]],
+  action: [[], [["Space", CONFIG.actionLabel || "A", CONFIG.actionName || "Action"]]],
+  stick: [[], []],
+  none: [[], []]
+};
+function bindKey(el, code) {
+  el.addEventListener("pointerdown", (e) => { e.preventDefault(); keys[code] = true; pressed[code] = true; });
+  const off = () => { keys[code] = false; };
+  el.addEventListener("pointerup", off); el.addEventListener("pointerleave", off); el.addEventListener("pointercancel", off);
+}
+function buildControls() {
+  const host = $("controls"), groups = CONFIG.buttons || PRESETS[CONFIG.controls || "none"] || PRESETS.none;
+  groups.forEach((g) => {
+    if (!g.length) { host.appendChild(document.createElement("span")); return; }      // keeps the left and right sides apart
+    const box = document.createElement("div"); box.className = "group";
+    g.forEach((b) => {
+      const el = document.createElement("button");
+      el.type = "button"; el.className = b[0] === "Space" ? "pad act" : "pad"; el.textContent = b[1];
+      el.setAttribute("aria-label", b[2]); el.setAttribute("data-key", b[0]);
+      bindKey(el, b[0]); box.appendChild(el);
+    });
+    host.appendChild(box);
+  });
+}
+
+/* ---- events ---- */
+window.addEventListener("resize", resize);
+window.addEventListener("keydown", (e) => {
+  if (!e.repeat) pressed[e.code] = true;
+  keys[e.code] = true;
+  if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].indexOf(e.code) >= 0) e.preventDefault();
+  if (e.code === "KeyP" || e.code === "Escape") togglePause();
+  else if (e.code === "KeyM") toggleMute();
+  else if ((e.code === "Enter" || e.code === "Space") && phase !== "playing") begin();
+});
+window.addEventListener("keyup", (e) => { keys[e.code] = false; });
+function toLogical(e) {
+  const r = canvas.getBoundingClientRect();
+  pointer.x = (e.clientX - r.left) * W / Math.max(1, r.width); pointer.y = (e.clientY - r.top) * (H + TOP) / Math.max(1, r.height) - TOP;
+}
+canvas.addEventListener("pointerdown", (e) => {
+  toLogical(e); pointer.sx = pointer.x; pointer.sy = pointer.y; pointer.down = true; pointer.tapped = true;
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* capture is optional */ }
+});
+canvas.addEventListener("pointermove", (e) => { toLogical(e); });
+window.addEventListener("pointerup", () => { if (pointer.down) pointer.released = true; pointer.down = false; });
+window.addEventListener("pointercancel", () => { pointer.down = false; });
+$("ov-btn").addEventListener("click", begin);
+$("btn-pause").addEventListener("click", togglePause);
+$("btn-mute").addEventListener("click", toggleMute);
+document.addEventListener("visibilitychange", () => { if (document.hidden && phase === "playing") togglePause(); });
+
+/* ---- start ---- */
+try { best = Number(localStorage.getItem(STORE)) || 0; muted = localStorage.getItem(STORE + "-muted") === "1"; } catch (e) { best = 0; }
+$("btn-mute").setAttribute("aria-pressed", String(muted));
+$("stat-lives").hidden = !(CONFIG.lives > 0);
+if (CONFIG.extra) { $("stat-extra").hidden = false; $("extra-k").textContent = CONFIG.extra; }
+document.title = document.title || "Game";
+buildControls();
+resize();
+state = newState();
+showOverlay(document.title, CONFIG.intro || "", "", "Play");
+hud();
+window.game = {
+  get state() { return state; }, get phase() { return phase; }, get score() { return score; },
+  start: begin, pause: togglePause, config: CONFIG, sfx: sfx, burst: burst, input: input
+};
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

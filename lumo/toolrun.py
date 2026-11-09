@@ -63,6 +63,10 @@ def tool_label(name, a, w):
         return clip(g("name") + (" part %s" % a["part"] if a.get("part") else ""), w)
     if name == "use_template":
         return clip(g("name") + (" → " + g("path") if a.get("path") else ""), w)
+    if name == "render_video":
+        return clip(g("script") + (" → " + g("output") if a.get("output") else "") + (" [" + g("quality") + "]" if a.get("quality") else ""), w)
+    if name == "video_info":
+        return clip(g("path"), w)
     if name == "todo":
         return "(%d steps)" % len(a.get("items") or [])
     if name == "manage_process":
@@ -124,4 +128,5 @@ TOOL_META.update({
     "project_overview": ("Scan", C_ACC), "verify_files": ("Check", C_OK), "download_file": ("Download", C_WARN),
     "system_info": ("System", C_VIO), "preview_web": ("Preview", C_VIO), "run_python": ("Python", C_VIO),
     "append_file": ("Append", C_WARN), "use_template": ("Template", C_WARN), "review_ui": ("Review", C_OK),
+    "render_video": ("Video", C_VIO), "video_info": ("Probe", C_ACC),
 })

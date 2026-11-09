@@ -589,6 +589,29 @@
       "deny": [],
       "min": 3,
       "pri": 0
+    },
+    "video-skill": {
+      "desc": "2D videos made with Python (stickman fights, explainers, kinetic text, charts, slideshows) rendered to MP4 with sound: brief, storyboard, lumovideo, render_video, checks.",
+      "kind": "core",
+      "match": [
+        [
+          "\\b(video|videos|vidio|film|movie|mp4|klip|clip|kartun|cartoon|stickman|stick figure|motion graphics?|video animasi|animasi 2d|2d animation|animated video)\\b",
+          5
+        ],
+        [
+          "\\b(animasi|animation|animate|animated|render|fps|subtitles?|captions?|ffmpeg|frame)\\b",
+          1.5
+        ],
+        [
+          "\\b(fight|fighting|berkelahi|bertarung|duel|tarung)\\b",
+          1.5
+        ]
+      ],
+      "deny": [
+        "video games?|game video|html5? video|<video|video player|video tag|youtube api|yt-dlp|youtube-dl|download|unduh|roblox|unity|godot"
+      ],
+      "min": 4,
+      "pri": 0
     }
   }
 }

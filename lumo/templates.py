@@ -29,11 +29,18 @@ def load_template_manifest():
 
 
 def template_catalog():
-    rows = []
+    """One short line per template. HTML templates that use index.html and TITLE, ACCENT, LANG say nothing extra (the line above the list says so)."""
+    rows = ["(Unless a line says otherwise: file index.html, variables TITLE, ACCENT, LANG.)"]
     for k, m in load_template_manifest().items():
-        rows.append("- %s: %s (default file: %s; variables: %s)" % (k, m.get("desc", ""), m.get("default_path", "?"),
-                                                                   ", ".join(m.get("vars", {})) or "none"))
-    return "\n".join(rows) or "(none)"
+        extra = []
+        dp = m.get("default_path", "")
+        if dp and dp != "index.html":
+            extra.append("file " + dp)
+        names = list(m.get("vars", {}))
+        if names != ["TITLE", "ACCENT", "LANG"]:
+            extra.append("vars " + ", ".join(names) if names else "no vars")
+        rows.append("- %s: %s%s" % (k, m.get("desc", ""), " (%s)" % "; ".join(extra) if extra else ""))
+    return "\n".join(rows) if len(rows) > 1 else "(none)"
 
 
 @tool("use_template", "Copy a tested, working starter into the workspace and fill in its variables. Use it as the base for games, "

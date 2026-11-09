@@ -9,12 +9,13 @@ It was built to run well in Termux on a phone (narrow output, no heavy dependenc
 ## What it does
 
 - **Builds things end to end:** games (2D canvas and 3D Three.js), websites, web apps, APIs, bots, scripts.
-- **Starts from tested templates** instead of improvising an engine: sixteen starters (2D, 3D, snake, breakout, runner, flappy and puzzle games, landing page, app shell, dashboard, documentation site, Python and Node JSON APIs, command-line tool, Telegram bot, scraper). The code starters carry a self test.
+- **Starts from tested templates** instead of improvising an engine: twenty-seven starters (2D, 3D, puzzle, snake, breakout, runner, flappy, pong, space shooter, asteroids, falling blocks, memory, racing, platformer and tower-defense games; stickman fight, explainer and kinetic-text videos; landing page, app shell, dashboard, documentation site, Python and Node JSON APIs, command-line tool, Telegram bot, scraper). The code starters carry a self test.
+- **Makes 2D videos with Python:** "a stickman fight", an explainer, kinetic text, a chart or a slideshow. The agent picks `video-skill`, writes an animation script with the bundled `lumovideo` library and turns it into a playable MP4 (with synthesised sound) in your workspace. It makes no video unless you ask for one.
 - **Researches the web:** searches through several providers with automatic fallback (web, news, code, Q&A, docs, packages, papers), reads pages in parallel, cites sources and looks up exact package versions. There is no cap on the number of searches.
 - **Learns from its work:** after it fixes a non-obvious error it can save a lesson, applies relevant lessons in later sessions, and can write a new skill for a procedure it expects to repeat (it asks first). You can review and delete everything with `/lessons`.
 - **Checks its own work:** syntax, undefined functions and variables, broken HTML, and a static UI review (responsive layout, accessibility, WCAG color contrast, generic "AI look") before it says it is done.
 - **Repairs itself:** when a command or check fails it reads the error, applies the likely fix (install the module, change the port, correct the path) and reruns, without waiting for you.
-- **Uses skills:** 32 guides with working code examples, good and bad examples and troubleshooting steps, chosen for each request.
+- **Uses skills:** 33 guides with working code examples, good and bad examples and troubleshooting steps, chosen for each request.
 - **Copes with unreliable free models:** automatic fallback to other models, rate-limit cooldowns, repair of broken tool-call JSON, recovery from cut-off output.
 - **Stays inside your workspace** unless you approve otherwise, and deletes to a recoverable trash.
 
@@ -127,19 +128,13 @@ Each request is handled on its own. The plan and the todo list of earlier work d
 
 No account is needed. For better general results you can add a key for Brave Search, Tavily or Serper, or point `SEARXNG_URL` at your own SearXNG instance, either as an environment variable or with `/secret set NAME`. `/search providers` shows which providers are ready and `/search reset` clears the cache and cooldowns.
 
-## device support
-
-Lumo code can be run on Android devices and desktops
-
-can be 32 bit and 64 bit
-
 ### Learning
 
 Lessons are short notes such as "On Termux `pip install pillow` needs `pkg install libjpeg-turbo` first". They are stored in `~/.lumo/knowledge/lessons.jsonl`, shown in the system prompt only when they match the current request, and treated as data, not instructions. Text that looks like credentials or like instructions to the model is refused. Skills the agent writes for itself go to `~/.lumo/skills/` after you approve them. `/lessons off` disables the feature.
 
 ### Skills
 
-Built in: planning, code quality, reasoning (hard questions), algorithms, frontend, design, game, backend, python, debug, environment, android, roblox, research, testing, security, database, git, javascript, command-line tools, scraping, bots, performance, documentation and self-improvement. Six larger reference skills (complex thinking, deep research, game development, memory management, planning, UI/CSS/color) load in parts so a small model's context is not filled up front. The code examples in the guides are executed by the test suite.
+Built in: planning, code quality, video (2D, Python), reasoning (hard questions), algorithms, frontend, design, game, backend, python, debug, environment, android, roblox, research, testing, security, database, git, javascript, command-line tools, scraping, bots, performance, documentation and self-improvement. Six larger reference skills (complex thinking, deep research, game development, memory management, planning, UI/CSS/color) load in parts so a small model's context is not filled up front. The code examples in the guides are executed by the test suite.
 
 Add your own: put `my-skill.md` in `skills/` (optionally register trigger patterns in `skills/manifest.json`), or install one from a GitHub repo with `/skill install URL`.
 
@@ -150,6 +145,10 @@ In `templates/`, each with a manifest entry (variables such as title and accent 
 | Template | Contents |
 |---|---|
 | `game-2d`, `game-3d`, `game-puzzle` | canvas arcade engine, Three.js arena, tile-merging puzzle |
+| `game-snake`, `game-breakout`, `game-runner`, `game-flappy` | engine-kit games: particles, screen shake, synthesised sound, power-ups, level patterns, duck and jump, tilting flyer |
+| `game-pong`, `game-shooter`, `game-asteroids`, `game-tetris` | AI opponent with rounds, waves and bosses with a touch stick, drift physics with splitting rocks, 7-piece bag with ghost piece and wall kicks |
+| `game-memory`, `game-racing`, `game-platformer`, `game-tower-defense` | card matching with timer, traffic racer with nitro, generated platformer levels with coyote time, towers with upgrades and 15 waves |
+| `video-stickman-fight`, `video-explainer`, `video-kinetic-text` | Python video scripts (lumovideo): automatic or scripted fight, scenes with chart and typewriter text, one punchy line per scene; selftest without ffmpeg |
 | `web-landing`, `web-app` | one-page site, app shell with storage |
 | `dashboard` | KPI cards, SVG charts, sortable table, CSV export |
 | `docs-site` | markdown pages, search, table of contents |
@@ -157,6 +156,24 @@ In `templates/`, each with a manifest entry (variables such as title and accent 
 | `cli-python` | subcommands, exit codes, `--json`, embedded tests |
 | `bot-telegram` | long-polling bot with a testable router, `--selftest` |
 | `scraper-python` | robots.txt, rate limit, cache, CSV/JSON output, `--selftest` |
+
+
+## support device
+
+Lumo-code can be run on both Android and desktop devices, both 32-bit and 64-bit.
+
+
+Minimum RAM to run Lumo-code smoothly: 4 GB RAM, 8 GB RAM, 12 GB RAM,
+
+### Videos (2D, Python)
+
+Ask for a video in plain words ("make a stickman fight video", "a 20 second explainer about recycling", "vertical kinetic text for Reels"). Lumo loads `video-skill`, writes one script in `videos/` that starts with `from lumovideo import *`, runs the `render_video` tool and reads its checks (blank or frozen frames, motion, brightness) before it reports. The result is an MP4 (H.264 + AAC) that plays in any player: `termux-open videos/fight.mp4`.
+
+- Needs `pkg install ffmpeg python-pillow` on Termux (`sudo apt install ffmpeg python3-pil` on Linux). Lumo tells you the exact command when something is missing and never installs without asking.
+- `lumovideo.py` is one file with no other dependency: canvas drawing with camera and parallax, easing and keyframes, scenes with transitions, synthesised sound effects and music, a stickman rig with a fight director (stages, hit stop, slow motion, health bars, K.O.), typewriter text, particles and bar charts. `render_video` copies it next to your script, so `python videos/fight.py` also works alone. `python videos/lumovideo.py --check` shows what your device can do.
+- Quality `draft` (fast preview), `standard` (854x480, default), `hd`, `fhd`. Your drawing code never changes between them.
+- `video_info` inspects any video file (length, codecs, sound, blank or frozen frames).
+- No video is made, and no GIF, music or extra file is added, unless you ask for it. If you write "MP3" for a video, Lumo makes an MP4 and says so.
 
 ### Changing behavior
 
@@ -248,6 +265,7 @@ The model list of the active provider is refreshed every 12 hours, in the backgr
 
 The model decides which skills to load: the system prompt lists every skill in one line, and the model calls `use_skill` for the guides that fit the task. Pin a skill yourself with `/skill use <name>`. `/skill mode auto` brings back the earlier behavior, where Lumo scores the request and loads skills itself.
 
+
 ## License
 
 Apache License 2.0 (see `LICENSE` and `NOTICE`). It grants an explicit patent license, requires the notice to stay with redistributions, and does not grant the right to use the project's name. Versions before 1.3.0 were published under the MIT License. This is a summary, not legal advice.
@@ -255,4 +273,4 @@ Apache License 2.0 (see `LICENSE` and `NOTICE`). It grants an explicit patent li
 
 
 
-(coded by alfar988 -- Lumo code)
+(coded by alfar988 --- Lumo-code)

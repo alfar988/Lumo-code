@@ -1,8 +1,9 @@
 <!DOCTYPE html>
 <!--
-  TEMPLATE game-snake: grid snake that speeds up as it grows (swipe, arrow keys, WASD, on-screen arrows, wall and self collision, best score)
-  Engine kit (keep): DPR-aware canvas scaling, clamped time step, keyboard + pointer + on-screen buttons, HUD, start/pause/game-over overlay,
-  best score in localStorage (guarded), optional sound. Replace the food, the art and the speed curve; the grid rules in update() are small and pure enough to test.
+  TEMPLATE game-snake: grid snake that speeds up as it grows (swipe, arrows, WASD, d-pad, timed bonus food, particles, best score)
+  Engine kit v2 (keep): DPR-aware canvas scaling, clamped time step, keys + pressed keys + pointer + touch stick + on-screen buttons, HUD, start/pause/game-over
+  overlay, best score (localStorage, guarded), sound effects, particles, floating text, screen shake (all off for reduced motion).
+  The grid rules in update() are small and pure enough to test. Replace the food, the art and the speed curve.
   Adapt it by replacing CONFIG, newState(), update() and draw(). Keep it ONE file.
 -->
 <html lang="__LANG__">
@@ -26,6 +27,7 @@
   }
   #stage { position: relative; width: 100%; height: 100%; display: grid; place-items: center; }
   canvas { display: block; background: #0b0f13; border-radius: 8px; touch-action: none; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   #hud { position: absolute; top: max(env(safe-area-inset-top), 8px); left: 8px; right: 8px; display: flex; gap: 12px; align-items: center; pointer-events: none; z-index: 2; }
   .stat { display: flex; flex-direction: column; line-height: 1.1; min-width: 52px; }
   .stat .k { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
@@ -43,6 +45,7 @@
   .controls .group { display: flex; gap: 10px; }
   .pad { pointer-events: auto; width: 64px; height: 64px; border-radius: 50%; border: 1px solid var(--line); background: rgba(23,29,37,.8); color: var(--ink);
          font: 700 20px var(--font); cursor: pointer; touch-action: none; display: grid; place-items: center; }
+  .pad.act { width: 76px; height: 76px; border-color: var(--accent); font-size: 22px; }
   .pad:active { background: var(--accent); color: var(--accent-ink); }
   #overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(8,11,15,.72); z-index: 3; padding: 16px; }
   #overlay[hidden] { display: none; }
@@ -50,6 +53,7 @@
   .card h1 { font-size: clamp(24px, 6vw, 32px); letter-spacing: -.01em; }
   .card p { color: var(--muted); font-size: 15px; line-height: 1.5; }
   .card .big { color: var(--ink); font-size: 36px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .badge { justify-self: center; padding: 4px 12px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 13px; font-weight: 700; }
   .btn { min-height: 48px; padding: 0 22px; border: 0; border-radius: 12px; background: var(--accent); color: var(--accent-ink); font: 700 16px var(--font); cursor: pointer; touch-action: manipulation; }
   .btn:hover { filter: brightness(1.08); }
   .btn:active { transform: translateY(1px); }
@@ -72,19 +76,12 @@
       <svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg>
     </button>
   </header>
-  <div class="controls">
-    <div class="group">
-      <button class="pad" type="button" data-key="ArrowLeft" aria-label="Left">&larr;</button>
-      <button class="pad" type="button" data-key="ArrowUp" aria-label="Up">&uarr;</button>
-    </div>
-    <div class="group">
-      <button class="pad" type="button" data-key="ArrowDown" aria-label="Down">&darr;</button>
-      <button class="pad" type="button" data-key="ArrowRight" aria-label="Right">&rarr;</button>
-    </div>
-  </div>
+  <div class="controls" id="controls"></div>
+  <div id="live" class="sr" aria-live="polite"></div>
   <div id="overlay" role="dialog" aria-modal="true" aria-labelledby="ov-title">
     <div class="card">
       <h1 id="ov-title">__TITLE__</h1>
+      <div class="badge" id="ov-badge" hidden></div>
       <div class="big" id="ov-big" hidden></div>
       <p id="ov-text"></p>
       <p id="ov-help"></p>
@@ -96,66 +93,102 @@
 <script>
 (function () {
 "use strict";
-const CONFIG = { width: 360, height: 480, lives: 0, intro: "Eat the food and grow. Do not hit the walls or yourself.", help: "Swipe, or use the arrow keys or WASD." };
+const CONFIG = { id: "snake", width: 360, height: 480, lives: 0, extra: "Length", controls: "dpad", intro: "Eat the food and grow. Do not hit the walls or yourself.", help: "Swipe, or use the arrow keys, WASD or the buttons. Gold food is worth more but vanishes." };
 const COLS = 18, ROWS = 24, CELL = 20;
 const DIRS = { left: [-1, 0], right: [1, 0], up: [0, -1], down: [0, 1] };
 const OPPOSITE = { left: "right", right: "left", up: "down", down: "up" };
 
-function spawnFood(snake) {
-  for (let i = 0; i < 300; i++) {
-    const f = { x: Math.floor(rnd(0, COLS)), y: Math.floor(rnd(0, ROWS)) };
-    if (!snake.some((p) => p.x === f.x && p.y === f.y)) return f;
+function freeCell(snake, avoid) {
+  for (let i = 0; i < 400; i++) {
+    const c = { x: rint(0, COLS - 1), y: rint(0, ROWS - 1) };
+    if (!snake.some((p) => p.x === c.x && p.y === c.y) && !(avoid && avoid.x === c.x && avoid.y === c.y)) return c;
   }
   return { x: 0, y: 0 };
 }
+function cx(c) { return c * CELL + CELL / 2; }
 function newState() {
   const snake = [{ x: 9, y: 12 }, { x: 8, y: 12 }, { x: 7, y: 12 }];
-  return { snake: snake, dir: "right", queue: [], food: spawnFood(snake), acc: 0, speed: 7 };
+  return { snake: snake, dir: "right", queue: [], food: freeCell(snake), bonus: null, eaten: 0, acc: 0, speed: 7, t: 0 };
 }
+function onStart() { setExtra(3); }
 function turn(d) {                  // queue at most two turns, never a reversal
   const s = state, ahead = s.queue.length ? s.queue[s.queue.length - 1] : s.dir;
   if (d && d !== ahead && d !== OPPOSITE[ahead] && s.queue.length < 2) s.queue.push(d);
 }
 function update(dt) {
   const s = state;
-  if (keys.ArrowLeft || keys.KeyA) turn("left");
-  if (keys.ArrowRight || keys.KeyD) turn("right");
-  if (keys.ArrowUp || keys.KeyW) turn("up");
-  if (keys.ArrowDown || keys.KeyS) turn("down");
+  s.t += dt;
+  if (pressed.ArrowLeft || pressed.KeyA) turn("left");
+  if (pressed.ArrowRight || pressed.KeyD) turn("right");
+  if (pressed.ArrowUp || pressed.KeyW) turn("up");
+  if (pressed.ArrowDown || pressed.KeyS) turn("down");
   turn(swipe(18));
+  if (s.bonus) { s.bonus.left -= dt; if (s.bonus.left <= 0) s.bonus = null; }
   s.acc += dt;
   const step = 1 / s.speed;
   while (s.acc >= step) {
     s.acc -= step;
     if (s.queue.length) s.dir = s.queue.shift();
     const d = DIRS[s.dir], head = { x: s.snake[0].x + d[0], y: s.snake[0].y + d[1] };
-    if (head.x < 0 || head.y < 0 || head.x >= COLS || head.y >= ROWS || s.snake.some((p) => p.x === head.x && p.y === head.y)) { gameOver(); return; }
-    s.snake.unshift(head);
-    if (head.x === s.food.x && head.y === s.food.y) {
-      addScore(10); s.food = spawnFood(s.snake); s.speed = Math.min(16, s.speed + 0.25); beep(520, 0.06);
-    } else {
-      s.snake.pop();
+    if (head.x < 0 || head.y < 0 || head.x >= COLS || head.y >= ROWS || s.snake.some((p) => p.x === head.x && p.y === head.y)) {
+      shake(8); burst(cx(s.snake[0].x), cx(s.snake[0].y), "#ffffff", 18, 160); gameOver(); return;
     }
+    s.snake.unshift(head);
+    let grew = false;
+    if (head.x === s.food.x && head.y === s.food.y) {
+      grew = true; s.eaten += 1; addScore(10); sfx("coin");
+      burst(cx(head.x), cx(head.y), "#ff6b6b", 12, 110); floatText(cx(head.x), cx(head.y) - 10, "+10", "#ff9b9b");
+      s.food = freeCell(s.snake, s.bonus); s.speed = Math.min(16, s.speed + 0.25);
+      if (s.eaten % 5 === 0) s.bonus = Object.assign(freeCell(s.snake, s.food), { left: 6 });
+    } else if (s.bonus && head.x === s.bonus.x && head.y === s.bonus.y) {
+      grew = true; addScore(30); sfx("power");
+      burst(cx(head.x), cx(head.y), "#ffd166", 16, 140); floatText(cx(head.x), cx(head.y) - 10, "+30", "#ffd166"); s.bonus = null;
+    }
+    if (!grew) s.snake.pop();
+    setExtra(s.snake.length);
   }
 }
 function draw() {
   const s = state;
-  ctx.strokeStyle = "rgba(255,255,255,.045)"; ctx.lineWidth = 1;
-  for (let x = 0; x <= COLS; x++) { ctx.beginPath(); ctx.moveTo(x * CELL, 0); ctx.lineTo(x * CELL, H); ctx.stroke(); }
-  for (let y = 0; y <= ROWS; y++) { ctx.beginPath(); ctx.moveTo(0, y * CELL); ctx.lineTo(W, y * CELL); ctx.stroke(); }
-  rrect(s.food.x * CELL + 3, s.food.y * CELL + 3, CELL - 6, CELL - 6, 6, "#ff6b6b");
-  s.snake.forEach((p, i) => rrect(p.x * CELL + 1, p.y * CELL + 1, CELL - 2, CELL - 2, 6, i === 0 ? "#ffffff" : ACCENT));
+  ctx.strokeStyle = "rgba(255,255,255,.04)"; ctx.lineWidth = 1; ctx.beginPath();
+  for (let x = 0; x <= COLS; x++) { ctx.moveTo(x * CELL, 0); ctx.lineTo(x * CELL, H); }
+  for (let y = 0; y <= ROWS; y++) { ctx.moveTo(0, y * CELL); ctx.lineTo(W, y * CELL); }
+  ctx.stroke();
+  const pulse = 1 + Math.sin(s.t * 6) * 0.08;
+  circle(cx(s.food.x), cx(s.food.y), CELL * 0.38 * pulse, "#ff6b6b");
+  circle(cx(s.food.x) - 2, cx(s.food.y) - 3, 2, "rgba(255,255,255,.65)");
+  if (s.bonus) {
+    const b = s.bonus;
+    circle(cx(b.x), cx(b.y), CELL * 0.42 * pulse, "#ffd166");
+    ctx.strokeStyle = "#ffd166"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cx(b.x), cx(b.y), CELL * 0.62, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (b.left / 6)); ctx.stroke();
+  }
+  for (let i = s.snake.length - 1; i >= 0; i--) {
+    const p = s.snake[i], k = i === 0 ? 1 : 0.8 + 0.2 * (1 - i / s.snake.length), size = (CELL - 2) * k;
+    ctx.globalAlpha = i % 2 ? 1 : 0.82;
+    rrect(cx(p.x) - size / 2, cx(p.y) - size / 2, size, size, 6, i === 0 ? "#ffffff" : ACCENT);
+  }
+  ctx.globalAlpha = 1;
+  const h = s.snake[0], d = DIRS[s.dir], ex = -d[1], ey = d[0];       // eyes sit on both sides of the heading
+  circle(cx(h.x) + d[0] * 3 + ex * 4, cx(h.y) + d[1] * 3 + ey * 4, 2, "#0b0f13");
+  circle(cx(h.x) + d[0] * 3 - ex * 4, cx(h.y) + d[1] * 3 - ey * 4, 2, "#0b0f13");
 }
 
-/* ===================== ENGINE KIT (keep): canvas scaling, loop, input, HUD, overlay, best score, sound ===================== */
-const W = CONFIG.width, H = CONFIG.height, TOP = CONFIG.top === undefined ? 56 : CONFIG.top, ACCENT = "__ACCENT__", STORE = "lumo-snake-best";   // TOP: band for the HUD
+/* ===================== ENGINE KIT v2 (keep): canvas scaling, loop, input (keys, pointer, stick, buttons), HUD, overlay,
+   best score, sound effects, particles, floating text, screen shake. Replace CONFIG, newState(), update() and draw(). ===================== */
+const W = CONFIG.width, H = CONFIG.height, TOP = CONFIG.top === undefined ? 56 : CONFIG.top, ACCENT = "__ACCENT__";   // TOP: band for the HUD
+const STORE = "lumo-" + (CONFIG.id || "game") + "-best";
 const $ = (id) => document.getElementById(id);
 const canvas = $("game"), ctx = canvas.getContext("2d");
 const view = { scale: 1, dpr: 1 };
-const keys = {};
-const pointer = { x: W / 2, y: H / 2, sx: 0, sy: 0, down: false, tapped: false };
-let phase = "ready", state = null, score = 0, best = 0, lives = 0, last = 0, muted = false, audio = null;
+const keys = {}, pressed = {};                       // keys: held (KeyboardEvent.code); pressed: true for one frame after the key goes down
+const pointer = { x: W / 2, y: H / 2, sx: 0, sy: 0, down: false, tapped: false, released: false };
+const STICK_R = 46;
+const calm = (function () { try { return !!window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { return false; } })();
+let phase = "ready", state = null, score = 0, best = 0, lives = 0, last = 0, beganAt = -1000, muted = false, audio = null;
+let shakeT = 0, shakeMag = 0, flashA = 0, flashC = "#ffffff";
+const parts = [], floats = [];
 
+/* ---- helpers ---- */
 function resize() {
   const vw = Math.max(1, window.innerWidth), vh = Math.max(1, window.innerHeight);
   view.scale = Math.min(vw / W, vh / (H + TOP));
@@ -166,24 +199,22 @@ function resize() {
   canvas.height = Math.max(1, Math.floor((H + TOP) * view.scale * view.dpr));
 }
 function rnd(a, b) { return a + Math.random() * (b - a); }
+function rint(a, b) { return Math.floor(rnd(a, b + 1)); }                       // whole number from a to b, both included
+function pick(list) { return list[Math.floor(Math.random() * list.length)]; }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function dist(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by); }
+function overlap(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }   // rectangles {x, y, w, h}
 function text(str, x, y, size, color, align) {
   ctx.font = "700 " + size + "px system-ui, sans-serif"; ctx.fillStyle = color || "#eef2f6"; ctx.textAlign = align || "center"; ctx.textBaseline = "middle";
   ctx.fillText(str, x, y);
 }
 function rrect(x, y, w, h, r, color) {
-  r = Math.min(r, w / 2, h / 2);
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
   ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
   ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); ctx.fillStyle = color; ctx.fill();
 }
-function beep(freq, dur) {
-  if (muted) return;
-  try {
-    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
-    const o = audio.createOscillator(), g = audio.createGain();
-    o.frequency.value = freq; g.gain.value = 0.05; o.connect(g); g.connect(audio.destination); o.start(); o.stop(audio.currentTime + dur);
-  } catch (e) { /* sound is optional */ }
-}
+function circle(x, y, r, color) { ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); }
 function swipe(th) {          // "left" | "right" | "up" | "down" once per drag of at least th logical pixels, else null
   if (!pointer.down) return null;
   const dx = pointer.x - pointer.sx, dy = pointer.y - pointer.sy;
@@ -191,52 +222,194 @@ function swipe(th) {          // "left" | "right" | "up" | "down" once per drag 
   pointer.sx = pointer.x; pointer.sy = pointer.y;
   return Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up");
 }
+function input() {            // one reading for keys, the touch stick (CONFIG.controls = "stick") and the action keys: {x, y, action}, x and y from -1 to 1
+  let x = (keys.ArrowRight || keys.KeyD ? 1 : 0) - (keys.ArrowLeft || keys.KeyA ? 1 : 0);
+  let y = (keys.ArrowDown || keys.KeyS ? 1 : 0) - (keys.ArrowUp || keys.KeyW ? 1 : 0);
+  let sx = 0, sy = 0;
+  if (CONFIG.controls === "stick" && pointer.down) {
+    const dx = pointer.x - pointer.sx, dy = pointer.y - pointer.sy, d = Math.hypot(dx, dy);
+    if (d > 6) { const k = Math.min(1, d / STICK_R) / d; sx = dx * k; sy = dy * k; }
+  }
+  if (x && y) { x *= Math.SQRT1_2; y *= Math.SQRT1_2; }                        // diagonal keys are not faster
+  if (Math.abs(sx) > Math.abs(x)) x = sx;
+  if (Math.abs(sy) > Math.abs(y)) y = sy;
+  return { x: x, y: y, action: !!(keys.Space || keys.KeyZ || keys.KeyX || keys.KeyJ) };
+}
+
+/* ---- sound: tone(), noise() and named effects. All optional and silent when muted or when audio is blocked ---- */
+function ac() {
+  if (!audio) { try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audio = null; } }
+  if (audio && audio.state === "suspended" && audio.resume) { try { audio.resume(); } catch (e) { /* needs a user gesture first */ } }
+  return audio;
+}
+function tone(freq, dur, type, vol, delay, to) {
+  if (muted) return;
+  try {
+    const a = ac(); if (!a) return;
+    const t0 = a.currentTime + (delay || 0), o = a.createOscillator(), g = a.createGain();
+    o.type = type || "square"; o.frequency.setValueAtTime(freq, t0);
+    if (to) o.frequency.exponentialRampToValueAtTime(Math.max(1, to), t0 + dur);
+    g.gain.setValueAtTime(vol || 0.05, t0); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(a.destination); o.start(t0); o.stop(t0 + dur + 0.02);
+  } catch (e) { /* sound is optional */ }
+}
+function noise(dur, vol, delay) {
+  if (muted) return;
+  try {
+    const a = ac(); if (!a) return;
+    const n = Math.max(1, Math.floor(a.sampleRate * dur)), buf = a.createBuffer(1, n, a.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    const s = a.createBufferSource(), g = a.createGain();
+    s.buffer = buf; g.gain.value = vol || 0.06; s.connect(g); g.connect(a.destination); s.start(a.currentTime + (delay || 0));
+  } catch (e) { /* sound is optional */ }
+}
+const SFX = {
+  click: () => tone(660, 0.05, "square", 0.04),
+  tick: () => tone(1000, 0.03, "square", 0.03),
+  coin: () => { tone(880, 0.07, "square", 0.05); tone(1320, 0.1, "square", 0.05, 0.07); },
+  jump: () => tone(320, 0.16, "square", 0.05, 0, 760),
+  shoot: () => tone(880, 0.09, "sawtooth", 0.03, 0, 220),
+  hit: () => { noise(0.14, 0.08); tone(180, 0.12, "sawtooth", 0.05, 0, 60); },
+  boom: () => { noise(0.35, 0.1); tone(120, 0.3, "sawtooth", 0.06, 0, 40); },
+  power: () => { tone(440, 0.08, "triangle", 0.06); tone(660, 0.08, "triangle", 0.06, 0.08); tone(990, 0.12, "triangle", 0.06, 0.16); },
+  win: () => { [523, 659, 784, 1046].forEach((f, i) => tone(f, 0.14, "triangle", 0.06, i * 0.1)); },
+  lose: () => tone(300, 0.3, "sawtooth", 0.05, 0, 70)
+};
+function sfx(name) { if (SFX[name]) SFX[name](); }
+function beep(freq, dur) { tone(freq, dur || 0.08, "square", 0.05); }
+function buzz(ms) { try { if (!muted && navigator.vibrate) navigator.vibrate(ms || 20); } catch (e) { /* not supported */ } }
+
+/* ---- effects: burst(x, y, color, count, speed), floatText(x, y, text, color), shake(strength), flash(color). Off for reduced motion ---- */
+function burst(x, y, color, n, speed) {
+  n = calm ? Math.min(n || 12, 4) : (n || 12); speed = speed || 120;
+  for (let i = 0; i < n && parts.length < 320; i++) {
+    const a = Math.random() * Math.PI * 2, v = speed * (0.35 + Math.random() * 0.65);
+    parts.push({ x: x, y: y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0, max: 0.35 + Math.random() * 0.4, size: 2 + Math.random() * 2.5, color: color || ACCENT });
+  }
+}
+function floatText(x, y, str, color) { if (floats.length < 40) floats.push({ x: x, y: y, str: String(str), color: color || "#eef2f6", life: 0 }); }
+function shake(mag) { if (!calm) { shakeMag = Math.max(shakeMag, mag || 6); shakeT = 0.28; } }
+function flash(color) { if (!calm) { flashC = color || "#ffffff"; flashA = 0.35; } }
+function fxUpdate(dt) {
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i]; p.life += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.96; p.vy = p.vy * 0.96 + 90 * dt;
+    if (p.life >= p.max) parts.splice(i, 1);
+  }
+  for (let i = floats.length - 1; i >= 0; i--) { const f = floats[i]; f.life += dt; f.y -= 34 * dt; if (f.life > 0.9) floats.splice(i, 1); }
+  if (shakeT > 0) shakeT -= dt; else shakeMag = 0;
+  if (flashA > 0) flashA = Math.max(0, flashA - dt * 1.4);
+}
+function fxDraw() {
+  for (const p of parts) { ctx.globalAlpha = Math.max(0, 1 - p.life / p.max); ctx.fillStyle = p.color; ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size); }
+  ctx.globalAlpha = 1;
+  for (const f of floats) { ctx.globalAlpha = Math.max(0, 1 - f.life / 0.9); text(f.str, f.x, f.y, 14, f.color); }
+  ctx.globalAlpha = 1;
+}
+function drawStick() {        // the ring and knob of the touch stick
+  if (CONFIG.controls !== "stick" || !pointer.down || phase !== "playing") return;
+  const dx = pointer.x - pointer.sx, dy = pointer.y - pointer.sy, d = Math.hypot(dx, dy) || 1, k = Math.min(1, STICK_R / d);
+  ctx.globalAlpha = 0.28; ctx.lineWidth = 2; ctx.strokeStyle = "#eef2f6"; ctx.beginPath(); ctx.arc(pointer.sx, pointer.sy, STICK_R, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 0.5; circle(pointer.sx + dx * k, pointer.sy + dy * k, 14, "#eef2f6"); ctx.globalAlpha = 1;
+}
+
+/* ---- HUD, overlay, game flow ---- */
 function hud() {
   $("hud-score").textContent = String(Math.floor(score));
-  $("hud-best").textContent = String(best);
+  $("hud-best").textContent = String(Math.max(best, Math.floor(score)));
   if (CONFIG.lives > 0) $("hud-lives").textContent = "●".repeat(Math.max(0, lives)) + "○".repeat(Math.max(0, CONFIG.lives - lives));
 }
 function setExtra(v) { $("hud-extra").textContent = String(v); }
 function addScore(n) { score += n; hud(); }
+function announce(msg) { $("live").textContent = msg; }
 function saveBest() { try { localStorage.setItem(STORE, String(best)); } catch (e) { /* storage may be blocked */ } }
-function showOverlay(title, body, big, btn) {
+function showOverlay(title, body, big, btn, badge) {
   $("ov-title").textContent = title; $("ov-text").textContent = body || ""; $("ov-help").textContent = phase === "ready" ? (CONFIG.help || "") : "";
-  $("ov-big").hidden = !big; $("ov-big").textContent = big || ""; $("ov-btn").textContent = btn; $("overlay").hidden = false;
+  $("ov-big").hidden = !big; $("ov-big").textContent = big || ""; $("ov-badge").hidden = !badge; $("ov-badge").textContent = badge || "";
+  $("ov-btn").textContent = btn; $("overlay").hidden = false;
+  try { $("ov-btn").focus(); } catch (e) { /* focus is a convenience */ }
 }
 function hideOverlay() { $("overlay").hidden = true; }
 function begin() {
-  if (phase === "paused") { phase = "playing"; hideOverlay(); return; }
-  state = newState(); score = 0; lives = CONFIG.lives; phase = "playing"; pointer.tapped = false; hideOverlay(); hud();
+  if (phase === "playing" && last - beganAt < 250) return;      // a key press and the focused button can both fire for one action
+  if (phase === "paused") { phase = "playing"; beganAt = last; hideOverlay(); return; }
+  state = newState(); score = 0; lives = CONFIG.lives || 0; phase = "playing"; beganAt = last; pointer.tapped = false;
+  parts.length = 0; floats.length = 0; shakeT = 0; shakeMag = 0; flashA = 0;
+  hideOverlay(); hud(); sfx("click");
   if (typeof onStart === "function") onStart();
 }
 function togglePause() {
   if (phase === "playing") { phase = "paused"; showOverlay("Paused", "", "", "Resume"); }
   else if (phase === "paused") begin();
 }
-function gameOver(message) {
-  phase = "over"; if (score > best) { best = Math.floor(score); saveBest(); } hud(); beep(140, 0.25);
-  showOverlay("Game over", (message ? message + " " : "") + "Best: " + best, String(Math.floor(score)), "Play again");
+function gameOver(message, won) {
+  if (phase === "over") return;
+  phase = "over";
+  const fresh = score > best && score > 0;
+  if (score > best) { best = Math.floor(score); saveBest(); }
+  hud(); sfx(won ? "win" : "lose"); buzz(won ? 15 : 60);
+  showOverlay(won ? "You win!" : "Game over", (message ? message + " " : "") + "Best: " + best, String(Math.floor(score)), "Play again", fresh ? "New best!" : "");
+  announce((won ? "You win. " : "Game over. ") + "Score " + Math.floor(score));
 }
 function loseLife() {
-  lives -= 1; hud(); beep(180, 0.15);
+  lives -= 1; hud(); sfx("hit"); shake(6); buzz(30);
   if (lives <= 0) gameOver();
 }
+function toggleMute() {
+  muted = !muted; $("btn-mute").setAttribute("aria-pressed", String(muted));
+  try { localStorage.setItem(STORE + "-muted", muted ? "1" : "0"); } catch (e) { /* storage may be blocked */ }
+}
 function frame(t) {
+  requestAnimationFrame(frame);
   const dt = Math.min(50, Math.max(0, t - last)) / 1000; last = t;
   if (phase === "playing") update(dt);
+  if (phase === "playing" || phase === "over") fxUpdate(dt);
   ctx.setTransform(view.scale * view.dpr, 0, 0, view.scale * view.dpr, 0, 0);
-  ctx.fillStyle = "#0b0f13"; ctx.fillRect(0, 0, W, H + TOP);
+  ctx.fillStyle = CONFIG.bg || "#0b0f13"; ctx.fillRect(0, 0, W, H + TOP);
   ctx.translate(0, TOP);
-  draw();
-  pointer.tapped = false;
-  requestAnimationFrame(frame);
+  if (shakeT > 0 && shakeMag) ctx.translate((Math.random() - 0.5) * shakeMag, (Math.random() - 0.5) * shakeMag);
+  draw(); fxDraw(); drawStick();
+  if (flashA > 0) { ctx.globalAlpha = flashA; ctx.fillStyle = flashC; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; }
+  pointer.tapped = false; pointer.released = false;
+  for (const k in pressed) pressed[k] = false;
 }
 
+/* ---- on-screen buttons: CONFIG.controls = "dpad" | "lr" | "lr-action" | "action" | "stick" | "none", or CONFIG.buttons = [[left group], [right group]] of [code, label, aria-label] ---- */
+const PRESETS = {
+  dpad: [[["ArrowLeft", "\u2190", "Left"], ["ArrowUp", "\u2191", "Up"]], [["ArrowDown", "\u2193", "Down"], ["ArrowRight", "\u2192", "Right"]]],
+  lr: [[["ArrowLeft", "\u2190", "Left"]], [["ArrowRight", "\u2192", "Right"]]],
+  "lr-action": [[["ArrowLeft", "\u2190", "Left"], ["ArrowRight", "\u2192", "Right"]], [["Space", CONFIG.actionLabel || "A", CONFIG.actionName || "Action"]]],
+  action: [[], [["Space", CONFIG.actionLabel || "A", CONFIG.actionName || "Action"]]],
+  stick: [[], []],
+  none: [[], []]
+};
+function bindKey(el, code) {
+  el.addEventListener("pointerdown", (e) => { e.preventDefault(); keys[code] = true; pressed[code] = true; });
+  const off = () => { keys[code] = false; };
+  el.addEventListener("pointerup", off); el.addEventListener("pointerleave", off); el.addEventListener("pointercancel", off);
+}
+function buildControls() {
+  const host = $("controls"), groups = CONFIG.buttons || PRESETS[CONFIG.controls || "none"] || PRESETS.none;
+  groups.forEach((g) => {
+    if (!g.length) { host.appendChild(document.createElement("span")); return; }      // keeps the left and right sides apart
+    const box = document.createElement("div"); box.className = "group";
+    g.forEach((b) => {
+      const el = document.createElement("button");
+      el.type = "button"; el.className = b[0] === "Space" ? "pad act" : "pad"; el.textContent = b[1];
+      el.setAttribute("aria-label", b[2]); el.setAttribute("data-key", b[0]);
+      bindKey(el, b[0]); box.appendChild(el);
+    });
+    host.appendChild(box);
+  });
+}
+
+/* ---- events ---- */
 window.addEventListener("resize", resize);
 window.addEventListener("keydown", (e) => {
+  if (!e.repeat) pressed[e.code] = true;
   keys[e.code] = true;
   if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].indexOf(e.code) >= 0) e.preventDefault();
   if (e.code === "KeyP" || e.code === "Escape") togglePause();
+  else if (e.code === "KeyM") toggleMute();
   else if ((e.code === "Enter" || e.code === "Space") && phase !== "playing") begin();
 });
 window.addEventListener("keyup", (e) => { keys[e.code] = false; });
@@ -244,30 +417,33 @@ function toLogical(e) {
   const r = canvas.getBoundingClientRect();
   pointer.x = (e.clientX - r.left) * W / Math.max(1, r.width); pointer.y = (e.clientY - r.top) * (H + TOP) / Math.max(1, r.height) - TOP;
 }
-canvas.addEventListener("pointerdown", (e) => { toLogical(e); pointer.sx = pointer.x; pointer.sy = pointer.y; pointer.down = true; pointer.tapped = true; });
-canvas.addEventListener("pointermove", (e) => { toLogical(e); });
-window.addEventListener("pointerup", () => { pointer.down = false; });
-window.addEventListener("pointercancel", () => { pointer.down = false; });
-document.querySelectorAll("[data-key]").forEach((el) => {      // on-screen buttons act like keys
-  const k = el.getAttribute("data-key");
-  el.addEventListener("pointerdown", (e) => { e.preventDefault(); keys[k] = true; });
-  const off = () => { keys[k] = false; };
-  el.addEventListener("pointerup", off); el.addEventListener("pointerleave", off); el.addEventListener("pointercancel", off);
+canvas.addEventListener("pointerdown", (e) => {
+  toLogical(e); pointer.sx = pointer.x; pointer.sy = pointer.y; pointer.down = true; pointer.tapped = true;
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* capture is optional */ }
 });
+canvas.addEventListener("pointermove", (e) => { toLogical(e); });
+window.addEventListener("pointerup", () => { if (pointer.down) pointer.released = true; pointer.down = false; });
+window.addEventListener("pointercancel", () => { pointer.down = false; });
 $("ov-btn").addEventListener("click", begin);
 $("btn-pause").addEventListener("click", togglePause);
-$("btn-mute").addEventListener("click", () => { muted = !muted; $("btn-mute").setAttribute("aria-pressed", String(muted)); });
+$("btn-mute").addEventListener("click", toggleMute);
 document.addEventListener("visibilitychange", () => { if (document.hidden && phase === "playing") togglePause(); });
 
-try { best = Number(localStorage.getItem(STORE)) || 0; } catch (e) { best = 0; }
+/* ---- start ---- */
+try { best = Number(localStorage.getItem(STORE)) || 0; muted = localStorage.getItem(STORE + "-muted") === "1"; } catch (e) { best = 0; }
+$("btn-mute").setAttribute("aria-pressed", String(muted));
 $("stat-lives").hidden = !(CONFIG.lives > 0);
 if (CONFIG.extra) { $("stat-extra").hidden = false; $("extra-k").textContent = CONFIG.extra; }
 document.title = document.title || "Game";
+buildControls();
 resize();
 state = newState();
 showOverlay(document.title, CONFIG.intro || "", "", "Play");
 hud();
-window.game = { get state() { return state; }, get phase() { return phase; }, start: begin, pause: togglePause, config: CONFIG };
+window.game = {
+  get state() { return state; }, get phase() { return phase; }, get score() { return score; },
+  start: begin, pause: togglePause, config: CONFIG, sfx: sfx, burst: burst, input: input
+};
 requestAnimationFrame(frame);
 })();
 </script>
