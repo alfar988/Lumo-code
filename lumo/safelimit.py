@@ -53,8 +53,8 @@ HIDDEN_UNLESS_ASKED = (
     ({"manage_process", "system_info"},
      r"\b(process|processes|proses|kill|port|ports|background|daemon|cpu|ram|memory|memori|disk|storage|penyimpanan|battery|baterai|system|sistem|uptime)\b"),
     ({"copy_path", "move_path"}, r"\b(copy|salin|move|pindah|pindahkan|rename|ganti nama|duplicate|relocate|cp|mv)\b"),
-    ({"render_video", "video_info"},
-     r"\b(video|videos|vidio|film|movie|mp4|clip|klip|animasi|animation|animate|animated|kartun|cartoon|stickman|stick figure|render|gif|motion graphics?)\b"),
+    ({"render_video", "video_info", "find_sound"},
+     r"\b(video|videos|vidio|film|movie|mp4|clip|klip|animasi|animation|animate|animated|kartun|cartoon|stickman|stick figure|render|gif|motion graphics?|sfx|sound effects?|efek suara)\b"),
 )
 
 _STATE = {"level": 0}

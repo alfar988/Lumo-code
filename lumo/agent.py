@@ -259,6 +259,25 @@ def trim_plan_messages(ctx, start):
                 m["content"] = c[:500] + "\n…[research summary is in history/notes.md and the plan]"
 
 
+def failover_provider(ctx):
+    """The free quota of the active provider is used up for today: carry on with another provider the user already set up (a saved key and a model
+    chosen there earlier). Never asks for a new key and never picks a provider that was not configured. Returns True when it switched."""
+    from lumo import providers
+    from lumo.provider_ui import use_provider
+    if not rotation_enabled(ctx) or ctx.turn.get("failovers", 0) >= 1:
+        return False
+    cur = providers.active(ctx.cfg)
+    per = ctx.cfg.get("models_by_provider") or {}
+    for prov in providers.providers_with_keys(ctx.cfg):
+        if prov["id"] == cur["id"] or not per.get(prov["id"]):
+            continue
+        use_provider(ctx, prov, ask_key=False)
+        ctx.turn["failovers"] = ctx.turn.get("failovers", 0) + 1
+        out("  " + warn("↻ ") + dim("%s: daily free quota used up. Continuing on %s (%s). Switch back any time with /provider %s; stop this with /rotate off." % (cur["name"], prov["name"], ctx.cur_model(), cur["id"])))
+        return True
+    return False
+
+
 def call_model(ctx, phase, tools, on_text, on_status, ui):
     tried, ctx_tries, bad_tries, tok_tries = [], 0, 0, 0
     while True:
@@ -310,6 +329,10 @@ def call_model(ctx, phase, tools, on_text, on_status, ui):
             ctx_tries += 1
             out("  " + warn("↻ ") + dim("the context is too long for this model, trimming history…"))
             local_compact(ctx, keep_last=4)
+            ui["sp"].start()
+            continue
+        if e2.kind == "daily" and failover_provider(ctx):
+            ui["gate"].__init__()
             ui["sp"].start()
             continue
         if e2.kind in ("auth", "daily") or (e2.kind == "credits" and is_free_model(model)):

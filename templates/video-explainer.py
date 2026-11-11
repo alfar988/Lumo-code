@@ -28,7 +28,7 @@ BG_TOP, BG_BOTTOM = "#0e1330", "#26346b"
 
 def make_video():
     w, h = (720, 1280) if VERTICAL else (1280, 720)
-    v = Video(w, h, fps=30)
+    v = Video(w, h)
     cx, cy = w / 2.0, h / 2.0
 
     def backdrop(c, t, accent):

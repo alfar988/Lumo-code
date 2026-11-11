@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """__TITLE__: a 2D stickman fight video made with Python (lumovideo) and rendered to MP4 with sound.
 
-Run:        python fight.py                      writes videos/fight.mp4 (854x480, 30 fps, with hit sounds)
+Run:        python fight.py                      writes videos/fight.mp4 (854x480, smooth 60 fps, varied sounds)
             python fight.py --selftest           checks the choreography and a few frames without ffmpeg
 Needs:      Pillow and ffmpeg (Termux: pkg install ffmpeg python-pillow). The render_video tool installs nothing itself.
 EDIT:       the names, colours, stage and length in the settings below. build() holds the fight: either the automatic director
@@ -23,17 +23,22 @@ SECONDS = float("__SECONDS__")         # length of the fight before the winner b
 WINNER = "__WINNER__"                  # "a" or "b"
 SEED = 3                               # another number gives another fight
 MUSIC = None                           # None, or "fight" | "epic" | "8bit" | "chill" for a background track
+PACE = 1.0                             # 0.7 slow and tense | 1.0 normal | 1.5 frantic (more exchanges per second)
+VOICES = False                         # True adds synthesised grunts and shouts
+REAL_SOUNDS = False                    # True looks for free real sound effects on the internet (cached in sounds/, credits in sounds/CREDITS.txt); offline it keeps the synthesised ones
 
 
 def build():
     a = Stick(NAME_A, COLOR_A, headband="#ffffff", gloves="#ff4d4d")
     b = Stick(NAME_B, COLOR_B, headband="#ffd166", gloves="#2b2b2b")
-    f = Fight(a, b, stage=STAGE, title=TITLE or None, music=MUSIC)
-    f.auto(duration=SECONDS, winner=WINNER, seed=SEED)
+    f = Fight(a, b, stage=STAGE, title=TITLE or None, music=MUSIC, voices=VOICES)
+    f.auto(duration=SECONDS, winner=WINNER, seed=SEED, pace=PACE)
+    if REAL_SOUNDS:
+        f.use_internet_sounds()
     # By hand instead of f.auto(...):
     #   f.gap(0.5, 90, 1.2); f.attack("a", "jab", at=2.0); f.attack("b", "cross", at=2.9, hit=False); f.dodge("a", at=2.85)
     #   f.attack("a", "round_kick", at=6.0, finisher=True); f.victory("a", at=8.0); f.text(6.4, "K.O.", 1.4, 200, "#ff5252", "slam")
-    v = Video(1280, 720, fps=30)
+    v = Video(1280, 720)
     v.add(f)
     return v, f
 

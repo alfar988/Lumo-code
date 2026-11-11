@@ -141,6 +141,7 @@ HELP = """
   /lessons [list|add|forget|on|off]   what Lumo learned from earlier work
   /auto · /access · /undo · /trash · /ps
   /serve [file] · /open <file> · /verify
+  /play [video] [--gallery]     watch the newest video (or copy it to your Movies folder)
   /overview · /ls · /cd
 
 %s
@@ -161,7 +162,7 @@ HELP = """
 
 SLASH = ["/help", "/game", "/web", "/ask", "/plan", "/build", "/test", "/fix", "/review", "/readme", "/explain",
          "/refactor", "/models", "/model", "/rotate", "/mode", "/research", "/status", "/abilities", "/history",
-         "/resume", "/notes", "/auto", "/access", "/undo", "/trash", "/ps", "/kill", "/serve", "/open", "/verify",
+         "/resume", "/notes", "/auto", "/access", "/undo", "/trash", "/ps", "/kill", "/serve", "/open", "/play", "/verify",
          "/overview", "/ls", "/cd", "/skills", "/skill", "/templates", "/ui", "/secret", "/todo", "/compact", "/clear", "/save", "/load",
          "/sessions", "/key", "/provider", "/checklimit", "/tokens", "/net", "/wakelock", "/init", "/search", "/dig", "/lessons", "/exit"]
 
@@ -547,6 +548,50 @@ def cmd_open(ctx, rest):
         out("  " + err("✗ could not open: %s" % e))
 
 
+def newest_video(ctx):
+    """The most recently written video in the workspace (videos/ first, then anywhere), or None."""
+    best, best_t = None, -1.0
+    for base in (ctx.ws / "videos", ctx.ws):
+        if not base.is_dir():
+            continue
+        for ext in ("*.mp4", "*.webm", "*.mkv", "*.gif"):
+            for p in base.rglob(ext) if base == ctx.ws / "videos" else base.glob(ext):
+                try:
+                    t = p.stat().st_mtime
+                except OSError:
+                    continue
+                if t > best_t:
+                    best, best_t = p, t
+        if best:
+            break
+    return best
+
+
+def cmd_play(ctx, rest):
+    """Open a video in the device player. No name = the newest video. --gallery also copies it into the phone's Movies folder."""
+    words = rest.split()
+    gallery = "--gallery" in words or "-g" in words
+    name = " ".join(w for w in words if w not in ("--gallery", "-g")).strip()
+    p = fs_path(ctx, name, "playing a video") if name else newest_video(ctx)
+    if p is None or not p.is_file():
+        out("  " + warn("no video found.") + dim(" Ask for one, or give the path: /play videos/fight.mp4"))
+        return
+    from lumo.tools.video import load_videokit
+    try:
+        vk = load_videokit()
+    except Exception as e:
+        out("  " + err("✗ %s" % e))
+        return
+    res = vk.open_video(str(p), gallery=gallery)
+    if res.get("copied"):
+        out("  " + ok("✓ copied to your Movies folder: ") + clip(res["copied"], tw() - 34) + dim("  (open Gallery, Files, VLC or MX Player)"))
+    if res.get("ok"):
+        out("  " + ok("✓ opened in the player ") + dim("(%s)  %s" % (res.get("via"), clip(str(p), tw() - 30))))
+        return
+    out("  " + warn("! could not start a player automatically. ") + dim((res.get("message") or "").strip()))
+    out(dim(vk.play_hints(str(p))))
+
+
 def cmd_wakelock(ctx, arg):
     on, off = shutil.which("termux-wake-lock"), shutil.which("termux-wake-unlock")
     if not on:
@@ -774,6 +819,8 @@ def handle_command(ctx, line):
         cmd_verify(ctx, arg)
     elif cmd == "/serve":
         cmd_serve(ctx, arg)
+    elif cmd == "/play":
+        cmd_play(ctx, rest)
     elif cmd == "/open":
         cmd_open(ctx, rest)
     elif cmd == "/wakelock":

@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 
 from lumo import anthropic_wire, providers
 from lumo.config import MAX_OUT_DEFAULT, MAXREQ_DEFAULT, STALL_DEFAULT, UA
@@ -91,6 +92,21 @@ def extract_error(txt):
         if "<html" in txt[:600].lower() or "cloudflare" in txt[:2000].lower():
             return "an HTML page from the server (probably blocked by the network or Cloudflare)"
         return txt[:300]
+
+
+def utc_reset_text():
+    """When the daily free quota comes back, in the phone's own clock: '00:00 UTC = 07:00 your time, in 9h 12m'."""
+    now = datetime.now(timezone.utc)
+    nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    mins = max(0, int((nxt - now).total_seconds() // 60))
+    return "00:00 UTC = %s your time, in %dh %02dm" % (nxt.astimezone().strftime("%H:%M"), mins // 60, mins % 60)
+
+
+def daily_quota_message():
+    return ("OpenRouter's daily limit for free (:free) models is used up. The limit belongs to your OpenRouter account (50 requests a day; 1000 after you buy "
+            "$10 of credit once), not to Lumo Code or to one model, so another free model will not help. It resets at %s. "
+            "Options: wait, then /resume · buy $10 credit once at openrouter.ai/credits · or /provider gemini (or groq, cerebras, nvidia, mistral) and paste that provider's own key; "
+            "Lumo continues on a provider you already set up when /rotate is on." % utc_reset_text())
 
 
 def classify_http(code, low):
@@ -300,7 +316,7 @@ def stream_chat(ctx, model, messages, tools, on_text, on_status=None, retries=1,
                     continue
             if kind == "daily":
                 if prov["id"] == "openrouter":
-                    raise ApiError("The daily free-model quota is used up. It resets at 00:00 UTC. Adding credit to your OpenRouter account raises the daily allowance, or switch to a paid model.", code=429, kind="daily")
+                    raise ApiError(daily_quota_message(), code=429, kind="daily")
                 raise ApiError("%s: daily limit reached (%s). Check /checklimit; it resets on the provider's schedule." % (prov["name"], msg[:160]), code=429, kind="daily")
             if kind in ("rate", "server") and srv_try < retries and not (kind == "rate" and fast_rate):
                 wait = min(max(delays[min(srv_try, 3)], retry_after or 0), 60)

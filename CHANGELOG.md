@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.9.0] - 2026-11-10
+
+### Added
+- **Smoother video.** `standard` quality now renders at 60 fps (draft 24); scripts that ask for 30 fps or less get motion blur automatically (`Video(..., blur=N)` or `LUMO_VIDEO_BLUR` to choose); frames are drawn on up to four CPU cores at once (`LUMO_VIDEO_WORKERS=1` disables it; a script with hidden state between frames is detected and drawn on one core). A parallel render is byte-identical to a single-core one.
+- **Better fights.** Every pose change is blended from the pose the body really had (no more snapping between moves), twelve attacks (new: hook, elbow, knee, axe kick, superman punch), backflip dodge (`dodge(..., style="flip")`), knock-back on hard hits, hit flash, dust, a fading streak behind the striking hand or foot, camera punch-in on hard hits, footwork (`step`), and a new director: flurries, trades of blows, blocks, dodges, counters, taunts and jumps, fitted to the requested length (`auto(pace=...)`). Stages now have drifting dust, fireflies, embers and camera flashes.
+- **Over 80 synthesised sound effects** in eleven families (new: weapons and creatures, for example `gunshot`, `reload`, `groan`, `zombie_death`) (every call sounds different; `sfx.names()`, `v.sfx("punch", 1.5)`), footsteps per surface, optional voices (`Fight(voices=True)`), a reverb, filters and echo toolbox, and a faster mixer.
+- **Real sounds from the internet.** New `find_sound` tool and `sfx.net()` / `find_sounds()` / `fetch_sound()` / `load_sound()` / `sfx.file()` in lumovideo: free CC0 and CC-BY recordings from Openverse (Freesound too with a `FREESOUND_API_KEY` secret), https only, private addresses refused, cached in `sounds/` with `CREDITS.txt`, synthesised fallback when offline. `Fight.use_sounds(...)` and `Fight.use_internet_sounds()` use them for hits and steps.
+- **How to play.** New `/play [video] [--gallery]` command; the render result and the script's own output now list the exact commands (`termux-open`, copy to the Gallery with `termux-setup-storage`).
+- **Daily free-model limit.** The OpenRouter limit message now says whose limit it is (the account's, not Lumo's, and shared by every `:free` model), when it resets in the phone's own clock, and the ways out; when `/rotate` is on and another provider already has a saved key and a chosen model, Lumo continues there automatically instead of stopping.
+
+### Changed
+- `video-skill` rewritten around smooth output, varied sound, how to play and using as few requests as possible (templates first). The no-download rule now allows free sound effects with credits, never music, lyrics or footage.
+
 ## [1.8.0] - 2026-11-09
 
 ### Added

@@ -23,7 +23,7 @@ VERTICAL = False                          # True makes a 720x1280 video for Reel
 
 def make_video():
     w, h = (720, 1280) if VERTICAL else (1280, 720)
-    v = Video(w, h, fps=30)
+    v = Video(w, h)
     slides = ["slide_left", "slide_right", "slide_up", "zoom"]
 
     def line_scene(i, text):

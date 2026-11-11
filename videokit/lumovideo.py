@@ -1,35 +1,47 @@
 """lumovideo: 2D video for Lumo Code.
 
-Pillow draws every frame, ffmpeg turns the frames into an MP4 (H.264 + AAC) that plays everywhere.
-One file, no other dependencies (numpy is not needed). Typical script:
+Pillow draws every frame (60 fps, motion blur, several CPU cores at once), ffmpeg turns the frames into an MP4 (H.264 + AAC) that plays
+everywhere. One file, no other dependencies (numpy is not needed). Typical script:
 
     from lumovideo import *
-    v = Video(1280, 720, fps=30)                 # coordinates are always 1280x720, whatever the output quality
+    v = Video(1280, 720)                         # coordinates are always 1280x720, whatever the output quality; fps follows the quality
     def intro(c, t):
         c.background("#101626", "#243b6b")
         c.text("Hello", 640, 360, 120, "white", outline="#000000", outline_w=6, scale=ease(t / 0.6, "out_back"))
     v.scene(3.0, intro, fade_out=0.4)
     v.render()                                   # videos/<script name>.mp4, or $LUMO_VIDEO_OUT
 
-Main parts: ease/Keys (timing), Canvas (drawing, camera), sfx/music/Mixer (sound), Video (scenes, render, checks),
-Stick/Fight/Stage (stickman characters and fights), Typewriter/Particles/BarChart/Subtitles (components).
+Main parts: ease/Keys (timing), Canvas (drawing, camera), sfx/music/Mixer (sound: synthesised effects, sound files, free sounds from the
+internet), Video (scenes, render, checks), Stick/Fight/Stage (stickman characters and fights), Typewriter/Particles/BarChart/Subtitles
+(components), play_hints/open_video (how to watch the result).
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import array
 import bisect
+import collections
+import concurrent.futures
+import hashlib
 import inspect
+import ipaddress
 import json
 import math
+import multiprocessing
 import os
 import random
 import re
+import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import time
+import traceback
+import urllib.error
+import urllib.parse
+import urllib.request
 import wave
 
 try:
@@ -41,6 +53,7 @@ __all__ = [
     "Video", "Scene", "Canvas", "Keys", "Spring", "ease", "lerp", "clamp", "remap", "tween", "noise", "pulse", "EASINGS",
     "rgb", "mix", "shade", "PALETTES", "font", "Mixer", "sfx", "music", "note_freq", "Stick", "Fight", "Stage", "POSES", "MOVES",
     "Typewriter", "Particles", "BarChart", "Subtitles", "Timeline", "check_requirements", "ffmpeg_path", "find_font", "frame_stats",
+    "play_hints", "open_video", "load_sound", "find_sounds", "fetch_sound", "sound_credits", "SOUND_DIR",
 ]
 
 
@@ -660,9 +673,11 @@ class _Parallax:
 
 
 # ======================================================================================
-# sound: synthesised effects, music and a mixer (no sound files needed)
+# sound: synthesised effects (many families, every call can sound different), sound files, free sounds from the internet,
+# music and a mixer. No sound files are needed: everything below is generated.
 # ======================================================================================
 SR = 44100
+SOUND_DIR = "sounds"                           # where downloaded or loaded sound files live (relative to the workspace; LUMO_SOUNDS_DIR overrides)
 _NOTE = {"C": 0, "C#": 1, "DB": 1, "D": 2, "D#": 3, "EB": 3, "E": 4, "F": 5, "F#": 6, "GB": 6, "G": 7, "G#": 8, "AB": 8, "A": 9, "A#": 10, "BB": 10, "B": 11}
 
 
@@ -677,7 +692,7 @@ def note_freq(name):
 
 
 def _buf(n):
-    return array.array("f", [0.0]) * n
+    return array.array("f", [0.0]) * max(0, int(n))
 
 
 def _wave(kind, ph):
@@ -693,12 +708,185 @@ def _wave(kind, ph):
     raise ValueError("wave must be sine, square, saw or tri")
 
 
+# ---- small DSP toolbox (pure Python; every function returns a new buffer) ----
 def _lowpass(buf, alpha):
     y = 0.0
     out = _buf(len(buf))
     for i, x in enumerate(buf):
         y += alpha * (x - y)
         out[i] = y
+    return out
+
+
+def _lp_a(fc):
+    rc = 1.0 / (2 * math.pi * max(20.0, fc))
+    return (1.0 / SR) / (rc + 1.0 / SR)
+
+
+def _highpass(buf, fc):
+    rc = 1.0 / (2 * math.pi * max(20.0, fc))
+    a = rc / (rc + 1.0 / SR)
+    out = _buf(len(buf))
+    y = xp = 0.0
+    for i, x in enumerate(buf):
+        y = a * (y + x - xp)
+        xp = x
+        out[i] = y
+    return out
+
+
+def _biquad_coef(kind, freq, q):
+    w0 = 2 * math.pi * min(max(freq, 20.0), SR * 0.45) / SR
+    cw, sw = math.cos(w0), math.sin(w0)
+    al = sw / (2.0 * max(q, 0.1))
+    if kind == "lp":
+        b0, b1, b2 = (1 - cw) / 2, 1 - cw, (1 - cw) / 2
+    elif kind == "hp":
+        b0, b1, b2 = (1 + cw) / 2, -(1 + cw), (1 + cw) / 2
+    else:                                                         # "bp": constant peak gain
+        b0, b1, b2 = al, 0.0, -al
+    a0 = 1 + al
+    return b0 / a0, b1 / a0, b2 / a0, -2 * cw / a0, (1 - al) / a0
+
+
+def _biquad(buf, kind, freq, q=0.8, freq_end=None):
+    """Resonant filter: kind 'lp', 'hp' or 'bp'. With freq_end the centre frequency glides (whooshes, sweeps)."""
+    n = len(buf)
+    out = _buf(n)
+    x1 = x2 = y1 = y2 = 0.0
+    b0, b1, b2, a1, a2 = _biquad_coef(kind, freq, q)
+    step = 48 if freq_end is not None else n + 1
+    for i in range(n):
+        if freq_end is not None and i % step == 0:
+            f = freq * (freq_end / float(freq)) ** (i / float(max(1, n)))
+            b0, b1, b2, a1, a2 = _biquad_coef(kind, f, q)
+        x = buf[i]
+        y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+        x2, x1 = x1, x
+        y2, y1 = y1, y
+        out[i] = y
+    return out
+
+
+def _soft(buf, drive=1.5):
+    """Soft saturation: adds weight and bite to hits without hard clipping."""
+    k = 1.0 / math.tanh(drive)
+    out = _buf(len(buf))
+    th = math.tanh
+    for i, x in enumerate(buf):
+        out[i] = th(drive * x) * k
+    return out
+
+
+def _pitch(buf, ratio):
+    """Play faster (ratio > 1: higher and shorter) or slower: linear resampling."""
+    if abs(ratio - 1.0) < 1e-3 or len(buf) < 4:
+        return buf
+    n = int((len(buf) - 1) / ratio)
+    out = _buf(n)
+    for i in range(n):
+        p = i * ratio
+        j = int(p)
+        f = p - j
+        out[i] = buf[j] * (1 - f) + buf[j + 1] * f
+    return out
+
+
+def _peak(buf, target=0.8):
+    pk = max(map(abs, buf)) if len(buf) else 0.0
+    if pk < 1e-9:
+        return buf
+    g = target / pk
+    out = _buf(len(buf))
+    for i, x in enumerate(buf):
+        out[i] = x * g
+    return out
+
+
+def _scale(buf, g):
+    out = _buf(len(buf))
+    for i, x in enumerate(buf):
+        out[i] = x * g
+    return out
+
+
+def _shape(buf, attack=0.002, tau=None, release=0.004):
+    """Envelope: linear attack, exponential decay (time constant tau seconds), linear release at the very end."""
+    n = len(buf)
+    out = _buf(n)
+    na, nr = max(1, int(attack * SR)), max(1, int(release * SR))
+    inv = 1.0 / (tau * SR) if tau else 0.0
+    for i in range(n):
+        e = min(1.0, i / float(na)) * math.exp(-i * inv) * min(1.0, (n - i) / float(nr))
+        out[i] = buf[i] * e
+    return out
+
+
+def _layers(*parts):
+    """Mix buffers: each part is (buffer, delay in seconds, gain)."""
+    n = max(int(d * SR) + len(b) for b, d, g in parts)
+    out = _buf(n)
+    for b, d, g in parts:
+        s = int(d * SR)
+        for i in range(len(b)):
+            out[s + i] += b[i] * g
+    return out
+
+
+def _concat(*parts):
+    """Put buffers one after another: each part is (buffer, gap in seconds before it)."""
+    out = _buf(0)
+    for b, gap in parts:
+        out = out + _buf(gap * SR) + b
+    return out
+
+
+def _reverb(buf, room=0.5, wet=0.28, tail=0.7):
+    """A small Schroeder reverb: four combs and two all-pass filters. Makes booms, gongs and thunder sound like they happen in a place."""
+    n = len(buf) + int(tail * SR)
+    src = _buf(n)
+    src[:len(buf)] = buf
+    acc = _buf(n)
+    for d_ms, g in ((29.7, 0.77), (37.1, 0.75), (41.1, 0.73), (43.7, 0.71)):
+        d = int(d_ms * SR / 1000.0)
+        gg = min(0.9, g * (0.82 + 0.3 * room))
+        comb = _buf(n)
+        for i in range(n):
+            comb[i] = src[i] + (comb[i - d] * gg if i >= d else 0.0)
+        for i in range(n):
+            acc[i] += comb[i] * 0.25
+    for d_ms, g in ((5.0, 0.7), (1.7, 0.7)):
+        d = int(d_ms * SR / 1000.0)
+        ap = _buf(n)
+        for i in range(n):
+            xd = acc[i - d] if i >= d else 0.0
+            yd = ap[i - d] if i >= d else 0.0
+            ap[i] = -g * acc[i] + xd + g * yd
+        acc = ap
+    out = _buf(n)
+    for i in range(n):
+        out[i] = (src[i] if i < len(buf) else 0.0) * (1 - wet * 0.5) + acc[i] * wet * 2.0
+    return out
+
+
+def _echo(buf, delay=0.18, gain=0.4, taps=3):
+    out = _buf(len(buf) + int(delay * SR * taps))
+    for k in range(taps + 1):
+        s = int(k * delay * SR)
+        g = gain ** k
+        for i in range(len(buf)):
+            out[s + i] += buf[i] * g
+    return out
+
+
+def _fade(buf, fin=0.0, fout=0.0):
+    n = len(buf)
+    out = array.array("f", buf)
+    ni, no = int(fin * SR), int(fout * SR)
+    for i in range(min(ni, n)):
+        out[i] *= i / float(ni)
+    for i in range(min(no, n)):
+        out[n - 1 - i] *= i / float(no)
     return out
 
 
@@ -723,12 +911,12 @@ class Mixer:
             snd = snd[-start:]
             start = 0
         end = min(self.n, start + len(snd))
+        seg = end - start
         lg, rg = vol * min(1.0, 1.0 - pan), vol * min(1.0, 1.0 + pan)
-        L, R = self.l, self.r
-        for i in range(end - start):
-            s = snd[i]
-            L[start + i] += s * lg
-            R[start + i] += s * rg
+        if lg:
+            self.l[start:end] = array.array("f", [a + s * lg for a, s in zip(self.l[start:end], snd[:seg])])
+        if rg:
+            self.r[start:end] = array.array("f", [a + s * rg for a, s in zip(self.r[start:end], snd[:seg])])
 
     def peak(self):
         return max(max(map(abs, self.l)), max(map(abs, self.r)))
@@ -738,12 +926,10 @@ class Mixer:
         n = min(self.n, int((length if length else self.duration) * SR))
         pk = self.peak()
         g = 0.92 / pk if pk > 0.92 else 1.0
+        k = 32767 * g
         out = array.array("h", [0]) * (n * 2)
-        L, R = self.l, self.r
-        for i in range(n):
-            a, b = L[i] * g, R[i] * g
-            out[2 * i] = int(max(-1.0, min(1.0, a)) * 32767)
-            out[2 * i + 1] = int(max(-1.0, min(1.0, b)) * 32767)
+        out[0::2] = array.array("h", [int(max(-32767.0, min(32767.0, x * k))) for x in self.l[:n]])
+        out[1::2] = array.array("h", [int(max(-32767.0, min(32767.0, x * k))) for x in self.r[:n]])
         with wave.open(path, "wb") as w:
             w.setnchannels(2)
             w.setsampwidth(2)
@@ -758,20 +944,86 @@ def _swap(a):
     return b.tobytes()
 
 
+_FORMANTS = {"a": (800, 1150, 2800), "o": (500, 900, 2600), "u": (330, 800, 2400), "e": (520, 1800, 2600), "i": (300, 2300, 3000), "uh": (620, 1150, 2500)}
+
+SFX_CATEGORIES = {
+    "fight": ["punch", "hit", "kick", "slap", "thud", "smash", "crack", "block", "clang", "slash", "whoosh", "swing", "ko"],
+    "movement": ["step", "slide", "land", "jump", "fall", "cloth"],
+    "voice": ["kiai", "grunt", "pain", "gasp", "laugh"],
+    "crowd": ["crowd", "cheer", "applause", "ooh"],
+    "cinematic": ["boom", "impact", "riser", "downer", "stinger", "heartbeat", "gong", "taiko", "drum_roll", "cymbal", "rimshot", "explosion"],
+    "nature": ["wind", "thunder", "rain", "fire", "drip", "splash"],
+    "interface": ["ding", "bell", "coin", "pop", "click", "blip", "error", "laser", "success", "fail", "powerup", "zap", "select", "notify"],
+    "machine": ["beep", "alarm", "engine", "camera", "key", "snare", "hat"],
+    "cartoon": ["boing", "whistle", "bonk", "honk", "trombone", "squeak"],
+    "weapon": ["gunshot", "rifle", "pistol", "reload", "shell"],
+    "creature": ["groan", "roar", "zombie_death"],
+}
+
+
 class _Sfx:
-    """Synthesised sound effects. Each method returns a mono sample buffer: m.add(sfx.punch(), at=1.5)."""
+    """Synthesised sound effects, over eighty of them (see sfx.names() and SFX_CATEGORIES). Each method returns a mono sample buffer:
+    v.sound(sfx.punch(), at=1.5) or v.sfx("punch", 1.5). Calling the same effect again gives a slightly different take (pitch, noise, length),
+    so ten punches never sound like one sample; variant=N gives the same take every time. power (0.5 to 1.5) is how hard, vol how loud.
+    Real recordings: sfx.file("sounds/punch.wav") loads a sound file, sfx.net("punch") fetches a free one from the internet (cached)."""
 
     def __init__(self):
         self.rng = random.Random(11)
+        self._n = {}
 
-    def tone(self, freq=440.0, dur=0.2, wave="sine", vol=0.5, decay=5.0, sweep=None, attack=0.004):
+    # ---- plumbing ----
+    def _v(self, name, variant=None):
+        if variant is None:
+            k = self._n.get(name, 0)
+            self._n[name] = k + 1
+        else:
+            k = int(variant)
+        return random.Random("lumo-sfx:%s:%d" % (name, k)), k
+
+    @staticmethod
+    def _rn(r, dur, vol=1.0, tau=None):
+        a = array.array("f", [(r.random() * 2 - 1) * vol for _ in range(int(dur * SR))])
+        return _shape(a, 0.0005, tau, 0.002) if tau else a
+
+    @staticmethod
+    def _sum(*parts):
+        n = max(len(p) for p in parts)
+        out = _buf(n)
+        for p in parts:
+            for i in range(len(p)):
+                out[i] += p[i]
+        return out
+
+    @staticmethod
+    def _out(buf, level=0.85, power=1.0, ratio=1.0):
+        """Final touch: pitch change, peak level that grows with power."""
+        return _pitch(_peak(buf, level * min(1.3, 0.55 + 0.5 * power)), ratio)
+
+    def names(self):
+        return sorted(n for names in SFX_CATEGORIES.values() for n in names)
+
+    def get(self, name, *args, **kw):
+        """An effect by name: sfx.get('punch', power=1.2). Raises a ValueError that lists the names when it does not exist."""
+        fn = getattr(self, name, None) if name in self.names() else None
+        if fn is None:
+            raise ValueError("no sound effect %r. Available: %s" % (name, ", ".join(self.names())))
+        return fn(*args, **kw)
+
+    # ---- basic building blocks (the original eight-bit style API) ----
+    def tone(self, freq=440.0, dur=0.2, wave="sine", vol=0.5, decay=5.0, sweep=None, attack=0.004, curve="lin"):
         n = int(dur * SR)
         out = _buf(n)
         ph = 0.0
+        two_pi = 2 * math.pi
         for i in range(n):
             t = i / float(SR)
-            f = freq if sweep is None else freq + (sweep - freq) * (t / dur)
-            ph += 2 * math.pi * f / SR
+            if sweep is None:
+                f = freq
+            elif curve == "exp":
+                f = freq * (sweep / float(freq)) ** (t / dur)
+            else:
+                f = freq + (sweep - freq) * (t / dur)
+            ph += two_pi * f / SR
             env = min(1.0, t / attack) * math.exp(-decay * t / dur)
             out[i] = _wave(wave, ph) * vol * env
         return out
@@ -784,56 +1036,327 @@ class _Sfx:
             out[i] = (r.random() * 2 - 1) * vol * math.exp(-decay * i / float(n))
         return out
 
-    @staticmethod
-    def _sum(*parts):
-        n = max(len(p) for p in parts)
-        out = _buf(n)
-        for p in parts:
-            for i in range(len(p)):
-                out[i] += p[i]
+    # ---- fight and impact ----
+    def punch(self, power=1.0, variant=None):
+        r, k = self._v("punch", variant)
+        th = self.tone(r.uniform(150, 215), 0.17, "sine", 1.0, 6.5, sweep=r.uniform(46, 62), curve="exp")
+        slap = _biquad(self._rn(r, 0.1, 1.0, 0.022), "bp", r.uniform(900, 1700), 0.9)
+        click = _highpass(self._rn(r, 0.006, 1.0, 0.002), 2500)
+        out = _soft(_peak(_layers((th, 0, 0.9), (slap, 0, 1.1), (click, 0, 0.5)), 0.9), 1.0 + 0.7 * power)
+        return self._out(out, 0.9, power, r.uniform(0.95, 1.06))
+
+    def hit(self, power=1.0, variant=None):
+        r, k = self._v("hit", variant)
+        th = self.tone(r.uniform(210, 270), 0.13, "tri", 1.0, 8, sweep=r.uniform(60, 80), curve="exp")
+        sub = self.tone(r.uniform(85, 100), 0.22, "sine", 1.0, 6, sweep=40, curve="exp")
+        nz = _biquad(self._rn(r, 0.12, 1.0, 0.03), "lp", r.uniform(1800, 3200), 0.7)
+        out = _soft(_layers((th, 0, 0.7), (sub, 0, 0.9), (nz, 0, 0.8)), 1.0 + 0.6 * power)
+        return self._out(out, 0.9, power, r.uniform(0.94, 1.07))
+
+    def kick(self, power=1.0, variant=None):
+        r, k = self._v("kick", variant)
+        th = self.tone(r.uniform(120, 145), 0.24, "sine", 1.0, 6, sweep=r.uniform(38, 46), curve="exp")
+        whap = _biquad(self._rn(r, 0.07, 1.0, 0.016), "bp", r.uniform(700, 1200), 0.8)
+        return self._out(_soft(_layers((th, 0, 1.0), (whap, 0, 0.5)), 1.4), 0.9, power, r.uniform(0.96, 1.05))
+
+    def slap(self, power=1.0, variant=None):
+        r, k = self._v("slap", variant)
+        nz = _biquad(self._rn(r, 0.08, 1.0, 0.016), "bp", r.uniform(2200, 3200), 0.7)
+        tn = self.tone(r.uniform(900, 1200), 0.05, "sine", 0.6, 7, sweep=400, curve="exp")
+        return self._out(_layers((nz, 0, 1.0), (tn, 0, 0.5)), 0.8, power, r.uniform(0.95, 1.08))
+
+    def thud(self, power=1.0, variant=None):
+        r, k = self._v("thud", variant)
+        th = self.tone(r.uniform(80, 100), 0.26, "sine", 1.0, 5, sweep=r.uniform(38, 46), curve="exp")
+        nz = _biquad(self._rn(r, 0.08, 1.0, 0.02), "lp", 600, 0.7)
+        return self._out(_layers((th, 0, 1.0), (nz, 0, 0.5)), 0.85, power, r.uniform(0.95, 1.06))
+
+    def smash(self, power=1.0, variant=None):
+        r, k = self._v("smash", variant)
+        a = self.punch(1.3, variant=k)
+        b = self.boom(0.7, 0.7, variant=k)
+        return self._out(_reverb(_layers((a, 0, 1.0), (b, 0.01, 0.8)), 0.3, 0.16, 0.25), 0.95, power, 1.0)
+
+    def crack(self, power=1.0, variant=None):
+        r, k = self._v("crack", variant)
+        sn = _biquad(self._rn(r, 0.06, 1.0, 0.012), "bp", r.uniform(2400, 3600), 1.2, freq_end=1500)
+        res = _layers((self.tone(r.uniform(1700, 2000), 0.06, "sine", 1.0, 8), 0, 0.6), (self.tone(r.uniform(3000, 3400), 0.04, "sine", 1.0, 8), 0, 0.4))
+        th = self.tone(130, 0.1, "sine", 1.0, 8, sweep=60, curve="exp")
+        return self._out(_layers((sn, 0, 1.0), (res, 0, 0.7), (th, 0.004, 0.6)), 0.85, power, r.uniform(0.96, 1.05))
+
+    def block(self, power=1.0, variant=None):
+        r, k = self._v("block", variant)
+        f = r.uniform(780, 900)
+        parts = [(self.tone(f * m, 0.12, "sine", 1.0, d), 0, g) for m, d, g in ((1.0, 9, 1.0), (1.62, 11, 0.6), (2.57, 14, 0.4))]
+        click = _highpass(self._rn(r, 0.01, 1.0, 0.003), 3000)
+        parts.append((click, 0, 0.7))
+        return self._out(_layers(*parts), 0.75, power, 1.0)
+
+    def clang(self, freq=None, dur=1.0, variant=None):
+        r, k = self._v("clang", variant)
+        f = freq or r.uniform(520, 760)
+        parts = [(self.tone(f * m, dur * dd, "sine", 1.0, 5 + 3 * j), 0, g) for j, (m, g, dd) in enumerate(((1.0, 1.0, 1.0), (2.32, 0.6, 0.8), (4.25, 0.4, 0.6), (6.63, 0.25, 0.45), (9.38, 0.15, 0.3)))]
+        parts.append((_highpass(self._rn(r, 0.03, 1.0, 0.008), 2000), 0, 0.9))
+        return self._out(_reverb(_layers(*parts), 0.3, 0.12, 0.3), 0.8, 1.0, 1.0)
+
+    def whoosh(self, dur=0.3, vol=0.6, variant=None, rise=None):
+        r, k = self._v("whoosh", variant)
+        n = int(dur * SR)
+        nz = array.array("f", [(r.random() * 2 - 1) * math.sin(math.pi * i / n) ** 1.5 for i in range(n)])
+        up = (k % 2 == 0) if rise is None else rise
+        f0, f1 = (r.uniform(350, 700), r.uniform(2400, 4200)) if up else (r.uniform(2400, 4200), r.uniform(350, 700))
+        return _peak(_biquad(nz, "bp", f0, 1.0, freq_end=f1), min(1.0, vol * 1.3))
+
+    def swing(self, power=1.0, variant=None):
+        return self.whoosh(0.16 + 0.04 * power, 0.5, variant)
+
+    def slash(self, dur=0.26, vol=0.55, variant=None):
+        r, k = self._v("slash", variant)
+        n = int(dur * SR)
+        nz = array.array("f", [(r.random() * 2 - 1) * (i / float(n)) ** 0.5 * math.exp(-3.0 * i / n) for i in range(n)])
+        out = _highpass(_biquad(nz, "bp", r.uniform(2500, 3500), 1.4, freq_end=r.uniform(6000, 8000)), 1500)
+        return _peak(out, vol)
+
+    def ko(self, variant=None):
+        r, k = self._v("ko", variant)
+        boom = self._sum(self.tone(120, 1.0, "sine", 1.0, 4, sweep=26, curve="exp"), _biquad(self._rn(r, 0.9, 0.7, 0.35), "lp", 500, 0.7))
+        return _peak(_reverb(boom, 0.6, 0.3, 0.6), 0.95)
+
+    # ---- movement ----
+    def step(self, vol=0.35, surface="wood", variant=None):
+        r, k = self._v("step", variant)
+        if surface == "dirt":
+            out = _biquad(self._rn(r, 0.11, 1.0, 0.03), "lp", r.uniform(450, 700), 0.7)
+        elif surface == "grass":
+            out = _highpass(_biquad(self._rn(r, 0.13, 1.0, 0.04), "bp", 3500, 0.6), 1800)
+        elif surface == "gravel":
+            out = self._sum(*[_concat((_highpass(self._rn(r, 0.006, 1.0, 0.002), 1500), r.uniform(0, 0.07))) for _ in range(7)])
+            out = _layers((out, 0, 0.8), (_biquad(self._rn(r, 0.1, 0.6, 0.03), "bp", 2200, 0.6), 0, 0.5))
+        elif surface == "metal":
+            f = r.uniform(900, 1300)
+            out = _layers((self.tone(f, 0.18, "sine", 1.0, 7), 0, 0.5), (self.tone(f * 2.4, 0.12, "sine", 1.0, 9), 0, 0.3), (_highpass(self._rn(r, 0.012, 1.0, 0.004), 2500), 0, 0.8))
+        elif surface == "sand":
+            out = _biquad(self._rn(r, 0.16, 1.0, 0.07), "lp", 900, 0.6)
+        elif surface == "concrete":
+            out = _layers((_highpass(self._rn(r, 0.02, 1.0, 0.005), 800), 0, 0.9), (self.tone(r.uniform(110, 150), 0.06, "sine", 1.0, 8), 0, 0.6))
+        else:                                                      # wood
+            out = _layers((self.tone(r.uniform(130, 170), 0.09, "sine", 1.0, 7, sweep=85, curve="exp"), 0, 0.9), (_biquad(self._rn(r, 0.05, 1.0, 0.012), "lp", 1500, 0.7), 0, 0.6))
+        return _peak(out, min(1.0, vol * 1.6))
+
+    def slide(self, dur=0.35, vol=0.4, variant=None):
+        r, k = self._v("slide", variant)
+        n = int(dur * SR)
+        nz = array.array("f", [(r.random() * 2 - 1) * min(1.0, i / (0.08 * SR)) * min(1.0, (n - i) / (0.15 * SR)) for i in range(n)])
+        return _peak(_biquad(nz, "bp", r.uniform(900, 1300), 0.8, freq_end=r.uniform(500, 800)), min(1.0, vol * 1.5))
+
+    def land(self, power=1.0, variant=None):
+        r, k = self._v("land", variant)
+        th = self.tone(r.uniform(90, 120), 0.18, "sine", 1.0, 6, sweep=45, curve="exp")
+        dust = _biquad(self._rn(r, 0.14, 1.0, 0.04), "lp", 900, 0.7)
+        return self._out(_layers((th, 0, 1.0), (dust, 0, 0.6)), 0.8, power, r.uniform(0.95, 1.06))
+
+    def jump(self, vol=0.4, variant=None):
+        return _peak(_layers((self.whoosh(0.18, 0.5, variant, rise=True), 0, 0.8), (self.land(0.5, variant), 0.0, 0.3)), min(1.0, vol * 1.6))
+
+    def fall(self, power=1.0, variant=None):
+        r, k = self._v("fall", variant)
+        a = self.tone(r.uniform(75, 90), 0.4, "sine", 1.0, 4, sweep=34, curve="exp")
+        b = _biquad(self._rn(r, 0.3, 1.0, 0.09), "lp", 700, 0.7)
+        c = self.thud(0.5, variant=k)
+        return self._out(_layers((a, 0, 1.0), (b, 0, 0.7), (c, 0.2, 0.5)), 0.9, power, 1.0)
+
+    def cloth(self, dur=0.25, vol=0.25, variant=None):
+        r, k = self._v("cloth", variant)
+        n = int(dur * SR)
+        nz = array.array("f", [(r.random() * 2 - 1) * (0.5 + 0.5 * math.sin(i / SR * r.uniform(40, 60))) * math.sin(math.pi * i / n) for i in range(n)])
+        return _peak(_biquad(nz, "bp", 2400, 0.5), min(1.0, vol * 1.6))
+
+    # ---- voices (simple formant synthesis: cartoon grunts, not speech) ----
+    def _voice(self, r, vowel, dur, f0, f1=None, vol=0.7, vib=0.0, breath=0.15):
+        f1 = f0 if f1 is None else f1
+        n = int(dur * SR)
+        src = _buf(n)
+        ph = 0.0
+        for i in range(n):
+            u = i / float(n)
+            f = (f0 + (f1 - f0) * u) * (1 + vib * math.sin(2 * math.pi * 5.8 * i / SR) + (r.random() - 0.5) * 0.01)
+            ph += f / SR
+            ph -= int(ph)
+            src[i] = (1.0 - 2.0 * ph) * 0.9 + (r.random() * 2 - 1) * breath
+        fo = _FORMANTS[vowel]
+        out = _layers(*[(_biquad(src, "bp", fq, q), 0, g) for fq, q, g in zip(fo, (6, 8, 10), (1.0, 0.7, 0.35))])
+        return _peak(_shape(out, 0.012, dur * 0.9, 0.03), vol)
+
+    def kiai(self, vol=0.7, variant=None):
+        r, k = self._v("kiai", variant)
+        f = r.uniform(230, 300)
+        return self._voice(r, "a", 0.3, f, f * 0.78, vol, 0.01, 0.3)
+
+    def grunt(self, vol=0.6, variant=None):
+        r, k = self._v("grunt", variant)
+        f = r.uniform(95, 135)
+        return self._voice(r, "uh", 0.2, f, f * 0.75, vol, 0.0, 0.25)
+
+    def pain(self, vol=0.65, variant=None):
+        r, k = self._v("pain", variant)
+        f = r.uniform(260, 340)
+        return self._voice(r, "o", 0.38, f, f * 0.5, vol, 0.03, 0.2)
+
+    def gasp(self, vol=0.4, variant=None):
+        r, k = self._v("gasp", variant)
+        n = int(0.32 * SR)
+        nz = array.array("f", [(r.random() * 2 - 1) * (i / float(n)) ** 1.5 * math.exp(-2.0 * i / n) for i in range(n)])
+        return _peak(_biquad(nz, "bp", 1500, 0.7), vol)
+
+    def laugh(self, vol=0.5, variant=None):
+        r, k = self._v("laugh", variant)
+        f = r.uniform(200, 260)
+        return _concat(*[(self._voice(r, "a", 0.1, f * (1 - 0.03 * j), f * (0.95 - 0.03 * j), vol, 0.02, 0.2), 0.0 if j == 0 else 0.07) for j in range(4)])
+
+    # ---- crowd ----
+    def crowd(self, dur=2.0, vol=0.3):
+        n = int(dur * SR)
+        out = _lowpass(self.noise(dur, vol, 0.0), 0.08)
+        for i in range(n):
+            u = i / float(n)
+            out[i] *= min(1.0, u * 6) * min(1.0, (1 - u) * 3) * 3.0
         return out
 
-    def punch(self, power=1.0):
-        return self._sum(self.tone(180, 0.16, "sine", 0.9 * power, 7, sweep=55), _lowpass(self.noise(0.07, 0.8 * power, 9), 0.35))
+    def cheer(self, dur=2.2, vol=0.4, variant=None):
+        r, k = self._v("cheer", variant)
+        n = int(dur * SR)
+        lfo = [r.uniform(5, 9) for _ in range(3)]
+        nz = array.array("f", [(r.random() * 2 - 1) * (0.6 + 0.2 * (math.sin(i / SR * lfo[0]) + math.sin(i / SR * lfo[1]) + math.sin(i / SR * lfo[2]))) * min(1.0, i / (0.25 * SR)) * min(1.0, (n - i) / (0.6 * SR)) for i in range(n)])
+        out = _layers((_biquad(nz, "bp", 900, 0.6), 0, 1.0), (_biquad(nz, "bp", 2100, 0.7), 0, 0.6))
+        return _peak(out, vol)
 
-    def hit(self, power=1.0):
-        return self._sum(self.tone(240, 0.12, "tri", 0.6 * power, 8, sweep=70), self.noise(0.09, 0.55 * power, 10), self.tone(90, 0.2, "sine", 0.7 * power, 6, sweep=40))
+    def applause(self, dur=2.5, vol=0.35, variant=None):
+        r, k = self._v("applause", variant)
+        parts = []
+        for _ in range(int(dur * 70)):
+            t = r.random() * dur
+            dens = min(1.0, t / (0.5 * dur) + 0.3) * min(1.0, (dur - t) / 0.8 + 0.2)
+            if r.random() < dens:
+                parts.append((_biquad(self._rn(r, 0.014, r.uniform(0.4, 1.0), 0.004), "bp", r.uniform(1500, 3200), 1.0), t, 1.0))
+        return _peak(_layers(*parts), vol) if parts else _buf(int(dur * SR))
 
-    def kick(self, power=1.0):
-        return self._sum(self.tone(130, 0.22, "sine", 1.0 * power, 6, sweep=42), _lowpass(self.noise(0.05, 0.5 * power, 12), 0.4))
+    def ooh(self, dur=1.0, vol=0.3, variant=None):
+        r, k = self._v("ooh", variant)
+        n = int(dur * SR)
+        nz = array.array("f", [(r.random() * 2 - 1) * math.sin(math.pi * i / n) ** 1.3 for i in range(n)])
+        return _peak(_biquad(nz, "bp", 380, 1.8, freq_end=520), vol)
 
-    def snare(self, power=1.0):
-        return self._sum(self.noise(0.16, 0.7 * power, 6), self.tone(190, 0.1, "tri", 0.35 * power, 9))
+    # ---- cinematic ----
+    def boom(self, dur=1.5, vol=0.9, variant=None):
+        r, k = self._v("boom", variant)
+        out = self._sum(self.tone(r.uniform(62, 78), dur, "sine", 1.0, 3.5, sweep=28, curve="exp"), _biquad(self._rn(r, dur * 0.7, 0.6, dur * 0.18), "lp", 300, 0.7))
+        return _peak(_reverb(out, 0.5, 0.22, 0.5), vol)
 
-    def hat(self, power=1.0, open_=False):
-        d = 0.18 if open_ else 0.04
-        n = self.noise(d, 0.35 * power, 7)
-        return array.array("f", (n[i] - (n[i - 1] if i else 0.0) for i in range(len(n))))     # crude high-pass
+    def impact(self, power=1.0, variant=None):
+        r, k = self._v("impact", variant)
+        b = self.boom(1.0, 0.9, variant=k)
+        h = self.punch(1.4, variant=k)
+        ring = self.tone(r.uniform(900, 1300), 0.6, "sine", 0.25, 6)
+        return self._out(_layers((b, 0, 1.0), (h, 0.0, 0.9), (ring, 0.0, 0.5)), 0.95, power, 1.0)
 
-    def whoosh(self, dur=0.3, vol=0.6):
+    def riser(self, dur=1.5, vol=0.4):
         n = int(dur * SR)
         out = _buf(n)
         r = self.rng
         y = 0.0
         for i in range(n):
             u = i / float(n)
-            a = 0.04 + 0.5 * math.sin(math.pi * u) ** 2
-            y += a * ((r.random() * 2 - 1) - y)
-            out[i] = y * vol * math.sin(math.pi * u) ** 1.5 * 2.2
+            y += (0.02 + 0.6 * u) * ((r.random() * 2 - 1) - y)
+            out[i] = y * vol * u * 2
         return out
 
-    def ko(self):
-        boom = self._sum(self.tone(120, 1.0, "sine", 1.0, 4, sweep=26), _lowpass(self.noise(0.9, 0.7, 4), 0.12))
-        echo = _buf(len(boom) + int(0.35 * SR))
-        for i in range(len(boom)):
-            echo[i] += boom[i]
-            echo[i + int(0.18 * SR)] += boom[i] * 0.35
-            echo[i + int(0.35 * SR)] += boom[i] * 0.15
-        return echo
+    def downer(self, dur=1.2, vol=0.4):
+        out = self.riser(dur, vol)
+        out.reverse()
+        return out
 
-    def explosion(self, dur=1.2):
-        return self._sum(_lowpass(self.noise(dur, 0.9, 3.5), 0.18), self.tone(90, dur, "sine", 0.9, 3.5, sweep=24))
+    def stinger(self, dur=1.6, vol=0.5, variant=None):
+        r, k = self._v("stinger", variant)
+        root = r.uniform(100, 130)
+        parts = [(self.tone(root * m, dur, "saw", 1.0, 2.5, attack=0.25), 0, g) for m, g in ((1.0, 1.0), (1.189, 0.8), (1.414, 0.7), (1.498, 0.5), (2.0, 0.4))]
+        return _peak(_biquad(_layers(*parts), "lp", 1800, 0.8, freq_end=500), vol)
 
+    def heartbeat(self, beats=3, bpm=70, vol=0.7):
+        gap = 60.0 / bpm
+        one = _layers((self.tone(62, 0.16, "sine", 1.0, 6, sweep=40, curve="exp"), 0, 1.0), (self.tone(54, 0.16, "sine", 1.0, 6, sweep=36, curve="exp"), 0.17, 0.75))
+        return _peak(_layers(*[(one, i * gap, 1.0) for i in range(int(beats))]), vol)
+
+    def gong(self, dur=2.8, vol=0.7, variant=None):
+        r, k = self._v("gong", variant)
+        f = r.uniform(95, 125)
+        parts = [(self.tone(f * m, dur * dd, "sine", 1.0, 3 + j, attack=0.01), 0, g) for j, (m, g, dd) in enumerate(((1.0, 1.0, 1.0), (1.52, 0.7, 0.9), (2.01, 0.6, 0.8), (2.77, 0.45, 0.65), (3.9, 0.3, 0.5), (5.3, 0.2, 0.4)))]
+        parts.append((_biquad(self._rn(r, 0.25, 1.0, 0.08), "bp", 900, 0.5), 0, 0.5))
+        return _peak(_reverb(_layers(*parts), 0.6, 0.25, 0.8), vol)
+
+    def taiko(self, power=1.0, variant=None):
+        r, k = self._v("taiko", variant)
+        out = _layers((self.tone(r.uniform(95, 110), 0.5, "sine", 1.0, 4, sweep=48, curve="exp"), 0, 1.0), (_biquad(self._rn(r, 0.08, 1.0, 0.02), "lp", 1200, 0.7), 0, 0.8))
+        return self._out(_reverb(_soft(out, 1.3), 0.4, 0.15, 0.3), 0.9, power, 1.0)
+
+    def drum_roll(self, dur=1.5, vol=0.5, variant=None):
+        r, k = self._v("drum_roll", variant)
+        parts, t = [], 0.0
+        while t < dur:
+            parts.append((self.snare(0.5 + 0.8 * t / dur, variant=int(t * 100)), t, 0.35 + 0.65 * t / dur))
+            t += 0.055
+        return _peak(_layers(*parts), vol)
+
+    def cymbal(self, dur=1.6, vol=0.45, variant=None):
+        r, k = self._v("cymbal", variant)
+        return _peak(_highpass(self._rn(r, dur, 1.0, dur * 0.3), 5500), vol)
+
+    def rimshot(self, vol=0.6):
+        return _peak(_concat((self.snare(0.8, variant=1), 0.0), (self.kick(0.8, variant=1), 0.22), (self.cymbal(0.9, 0.6, variant=2), 0.2)), vol)
+
+    def explosion(self, dur=1.2, variant=None):
+        r, k = self._v("explosion", variant)
+        out = self._sum(_biquad(self._rn(r, dur, 0.9, dur * 0.28), "lp", r.uniform(500, 900), 0.7), self.tone(90, dur, "sine", 0.9, 3.5, sweep=24, curve="exp"),
+                        _highpass(self._rn(r, dur * 0.5, 0.3, dur * 0.12), 2500))
+        return _peak(_reverb(out, 0.5, 0.2, 0.45), 0.95)
+
+    # ---- nature ----
+    def wind(self, dur=3.0, vol=0.3, variant=None):
+        r, k = self._v("wind", variant)
+        n = int(dur * SR)
+        nz = array.array("f", [(r.random() * 2 - 1) * (0.55 + 0.45 * math.sin(i / SR * 1.7 + k)) * min(1.0, i / (0.5 * SR)) * min(1.0, (n - i) / (0.6 * SR)) for i in range(n)])
+        return _peak(_biquad(nz, "bp", 350, 1.2, freq_end=800), vol)
+
+    def thunder(self, dur=3.0, vol=0.8, variant=None):
+        r, k = self._v("thunder", variant)
+        n = int(dur * SR)
+        nz = array.array("f", [(r.random() * 2 - 1) * min(1.0, i / (0.25 * SR)) * math.exp(-1.6 * i / n) * (0.7 + 0.3 * math.sin(i / SR * 9.0)) for i in range(n)])
+        return _peak(_reverb(_biquad(nz, "lp", 260, 0.7), 0.6, 0.2, 0.6), vol)
+
+    def rain(self, dur=3.0, vol=0.25, variant=None):
+        r, k = self._v("rain", variant)
+        n = int(dur * SR)
+        nz = array.array("f", [(r.random() * 2 - 1) * min(1.0, i / (0.4 * SR)) * min(1.0, (n - i) / (0.5 * SR)) for i in range(n)])
+        return _peak(_layers((_highpass(nz, 3000), 0, 1.0), (_biquad(nz, "bp", 6500, 0.6), 0, 0.5)), vol)
+
+    def fire(self, dur=2.0, vol=0.25, variant=None):
+        r, k = self._v("fire", variant)
+        n = int(dur * SR)
+        base = _biquad(array.array("f", [(r.random() * 2 - 1) * 0.5 for _ in range(n)]), "lp", 700, 0.7)
+        crackles = [(_highpass(self._rn(r, 0.01, r.uniform(0.4, 1.0), 0.003), 2000), r.random() * (dur - 0.05), 1.0) for _ in range(int(dur * 14))]
+        return _peak(_layers((base, 0, 0.6), *crackles), vol)
+
+    def drip(self, variant=None):
+        r, k = self._v("drip", variant)
+        f = r.uniform(1100, 1700)
+        return _peak(_layers((self.tone(f, 0.06, "sine", 1.0, 5, sweep=f * 0.55, curve="exp"), 0, 1.0), (self.tone(f * 0.5, 0.25, "sine", 0.3, 9), 0.01, 0.3)), 0.6)
+
+    def splash(self, dur=0.5, vol=0.5, variant=None):
+        r, k = self._v("splash", variant)
+        n = int(dur * SR)
+        nz = array.array("f", [(r.random() * 2 - 1) * math.exp(-5.0 * i / n) * min(1.0, i / (0.01 * SR)) for i in range(n)])
+        return _peak(_biquad(nz, "bp", 1400, 0.6, freq_end=3200), vol)
+
+    # ---- interface and eight-bit ----
     def bell(self, freq=880.0, dur=1.0, vol=0.5):
         return self._sum(*[self.tone(freq * m, dur, "sine", vol * a, d) for m, a, d in ((1.0, 1.0, 4), (2.76, 0.5, 6), (5.4, 0.25, 9))])
 
@@ -847,13 +1370,7 @@ class _Sfx:
         return self.tone(1800, 0.02, "square", 0.3, 9)
 
     def coin(self):
-        a, b = self.tone(988, 0.07, "square", 0.3, 3), self.tone(1319, 0.28, "square", 0.3, 6)
-        out = _buf(len(a) + len(b))
-        for i in range(len(a)):
-            out[i] += a[i]
-        for i in range(len(b)):
-            out[i + len(a)] += b[i]
-        return out
+        return _concat((self.tone(988, 0.07, "square", 0.3, 3), 0.0), (self.tone(1319, 0.28, "square", 0.3, 6), 0.0))
 
     def error(self):
         return self._sum(self.tone(180, 0.25, "saw", 0.35, 3), self.tone(185, 0.25, "square", 0.2, 3))
@@ -861,33 +1378,519 @@ class _Sfx:
     def laser(self, dur=0.25):
         return self.tone(1600, dur, "saw", 0.3, 5, sweep=200)
 
-    def step(self, vol=0.35):
-        return _lowpass(self.noise(0.06, vol, 9), 0.25)
-
-    def crowd(self, dur=2.0, vol=0.3):
-        n = int(dur * SR)
-        out = _lowpass(self.noise(dur, vol, 0.0), 0.08)
-        for i in range(n):
-            u = i / float(n)
-            out[i] *= min(1.0, u * 6) * min(1.0, (1 - u) * 3) * 3.0
-        return out
-
-    def riser(self, dur=1.5, vol=0.4):
-        n = int(dur * SR)
-        out = _buf(n)
-        r = self.rng
-        y = 0.0
-        for i in range(n):
-            u = i / float(n)
-            y += (0.02 + 0.6 * u) * ((r.random() * 2 - 1) - y)
-            out[i] = y * vol * u * 2
-        return out
-
     def blip(self, freq=660.0, dur=0.08):
         return self.tone(freq, dur, "square", 0.25, 4)
 
+    def success(self):
+        return _concat(*[(self.tone(note_freq(n), 0.11 if n != "C6" else 0.4, "square", 0.25, 4), 0.0) for n in ("C5", "E5", "G5", "C6")])
+
+    def fail(self):
+        return _concat(*[(self.tone(note_freq(n), 0.16 if n != "C3" else 0.5, "square", 0.25, 4), 0.0) for n in ("G3", "E3", "D3", "C3")])
+
+    def powerup(self):
+        return _concat(*[(self.tone(note_freq(n), 0.06, "square", 0.22, 2), 0.0) for n in ("C4", "E4", "G4", "C5", "E5", "G5", "C6")])
+
+    def zap(self, variant=None):
+        r, k = self._v("zap", variant)
+        return _peak(self._sum(self.tone(2200, 0.22, "saw", 0.7, 4, sweep=120, curve="exp"), self._rn(r, 0.22, 0.3, 0.06)), 0.6)
+
+    def select(self):
+        return _concat((self.tone(880, 0.05, "square", 0.2, 3), 0.0), (self.tone(1320, 0.08, "square", 0.2, 5), 0.0))
+
+    def notify(self):
+        return _concat((self.tone(1318, 0.12, "sine", 0.4, 5), 0.0), (self.tone(1760, 0.3, "sine", 0.4, 6), 0.02))
+
+    # ---- machines ----
+    def beep(self, freq=1000.0, dur=0.15, vol=0.3):
+        return _shape(self.tone(freq, dur, "square", vol, 0.0), 0.003, None, 0.01)
+
+    def alarm(self, dur=1.5, vol=0.3):
+        return _concat(*[(self.beep(800 if i % 2 == 0 else 1000, 0.22, vol), 0.0) for i in range(int(dur / 0.22))])
+
+    def engine(self, dur=2.0, rpm=1800, vol=0.35, variant=None):
+        r, k = self._v("engine", variant)
+        n = int(dur * SR)
+        out = _buf(n)
+        ph = 0.0
+        for i in range(n):
+            f = (rpm / 60.0) * 2.0 * (1.0 + 0.25 * i / n)
+            ph += f / SR
+            ph -= int(ph)
+            out[i] = (1.0 - 2.0 * ph) * 0.6 + math.sin(2 * math.pi * ph * 2) * 0.3 + (r.random() * 2 - 1) * 0.15
+        return _peak(_biquad(out, "lp", 700, 0.8), vol)
+
+    def camera(self):
+        return _concat((_highpass(self.noise(0.012, 0.8, 8), 1500), 0.0), (_highpass(self.noise(0.012, 0.6, 8), 1200), 0.06))
+
+    def key(self, variant=None):
+        r, k = self._v("key", variant)
+        return _peak(_layers((_highpass(self._rn(r, 0.012, 1.0, 0.003), 1800), 0, 1.0), (self.tone(r.uniform(200, 260), 0.04, "sine", 1.0, 8), 0, 0.5)), 0.4)
+
+    def snare(self, power=1.0, variant=None):
+        r, k = self._v("snare", variant)
+        out = _layers((_highpass(self._rn(r, 0.17, 1.0, 0.045), 900), 0, 0.9), (self.tone(r.uniform(180, 210), 0.1, "tri", 0.8, 9), 0, 0.6))
+        return self._out(out, 0.7, power, 1.0)
+
+    def hat(self, power=1.0, open_=False, variant=None):
+        r, k = self._v("hat", variant)
+        return self._out(_highpass(self._rn(r, 0.2 if open_ else 0.045, 1.0, 0.07 if open_ else 0.012), 6500), 0.4, power, 1.0)
+
+    # ---- weapons and creatures ----
+    def gunshot(self, power=1.0, variant=None):
+        r, k = self._v("gunshot", variant)
+        crack = _highpass(self._rn(r, 0.05, 1.0, 0.009), 1200)
+        body = _biquad(self._rn(r, 0.16, 1.0, 0.04), "bp", r.uniform(500, 900), 0.7)
+        thump = self.tone(r.uniform(130, 170), 0.14, "sine", 1.0, 7, sweep=48, curve="exp")
+        out = _soft(_layers((crack, 0, 1.0), (body, 0, 0.8), (thump, 0, 0.9)), 1.6)
+        return self._out(_reverb(out, 0.35, 0.12, 0.35), 0.95, power, r.uniform(0.96, 1.05))
+
+    def rifle(self, power=1.0, variant=None):
+        k = self._v("rifle", variant)[1]
+        return _pitch(self.gunshot(power, variant=100 + k), 0.86)
+
+    def pistol(self, power=1.0, variant=None):
+        k = self._v("pistol", variant)[1]
+        return _pitch(self.gunshot(power * 0.8, variant=200 + k), 1.18)
+
+    def reload(self, variant=None):
+        r, k = self._v("reload", variant)
+        click = lambda f: _layers((_highpass(self._rn(r, 0.012, 1.0, 0.003), 1800), 0, 1.0), (self.tone(f, 0.05, "sine", 1.0, 9), 0, 0.5))
+        return _peak(_layers((click(r.uniform(900, 1100)), 0.0, 0.9), (click(r.uniform(1300, 1500)), 0.26, 1.0), (self.thud(0.4, variant=k), 0.5, 0.5), (click(r.uniform(1700, 1900)), 0.62, 1.0)), 0.7)
+
+    def shell(self, variant=None):
+        r, k = self._v("shell", variant)
+        f = r.uniform(3800, 4800)
+        return _peak(_layers(*[(self.tone(f * (1 + 0.03 * j), 0.07, "sine", 1.0, 9), 0.0 + j * (0.07 + 0.03 * j), 0.9 - 0.3 * j) for j in range(3)]), 0.4)
+
+    def groan(self, dur=0.9, vol=0.5, variant=None):
+        r, k = self._v("groan", variant)
+        f = r.uniform(70, 95)
+        return self._voice(r, "o", dur, f, f * 0.8, vol, 0.04, 0.35)
+
+    def roar(self, vol=0.6, variant=None):
+        r, k = self._v("roar", variant)
+        f = r.uniform(120, 150)
+        return _soft(self._voice(r, "a", 1.0, f, f * 0.8, vol, 0.03, 0.5), 1.4)
+
+    def zombie_death(self, variant=None):
+        r, k = self._v("zombie_death", variant)
+        f = r.uniform(100, 125)
+        return _peak(_layers((self._voice(r, "uh", 0.5, f, f * 0.5, 0.7, 0.02, 0.4), 0, 1.0), (self.thud(0.8, variant=k), 0.38, 0.6)), 0.7)
+
+    # ---- cartoon ----
+    def boing(self, dur=0.55, vol=0.5, variant=None):
+        r, k = self._v("boing", variant)
+        n = int(dur * SR)
+        out = _buf(n)
+        ph = 0.0
+        base = r.uniform(180, 260)
+        for i in range(n):
+            u = i / float(n)
+            f = base * (1.0 + 2.2 * math.exp(-4 * u) * (0.5 + 0.5 * math.sin(2 * math.pi * 9 * u)))
+            ph += 2 * math.pi * f / SR
+            out[i] = math.sin(ph) * math.exp(-3.5 * u) * min(1.0, i / (0.004 * SR))
+        return _peak(out, vol)
+
+    def whistle(self, up=True, dur=0.6, vol=0.4):
+        a, b = (350.0, 1700.0) if up else (1700.0, 350.0)
+        n = int(dur * SR)
+        out = _buf(n)
+        ph = 0.0
+        for i in range(n):
+            u = i / float(n)
+            f = a * (b / a) ** u * (1 + 0.012 * math.sin(2 * math.pi * 7 * u * dur))
+            ph += 2 * math.pi * f / SR
+            out[i] = math.sin(ph) * min(1.0, u * 20) * min(1.0, (1 - u) * 12)
+        return _peak(out, vol)
+
+    def bonk(self, variant=None):
+        r, k = self._v("bonk", variant)
+        return _peak(_layers((self.tone(r.uniform(300, 360), 0.14, "square", 0.6, 6, sweep=150, curve="exp"), 0, 1.0), (_biquad(self._rn(r, 0.02, 1.0, 0.006), "bp", 1800, 1.0), 0, 0.7)), 0.7)
+
+    def honk(self, vol=0.4):
+        return _peak(_biquad(_layers((self.tone(330, 0.28, "saw", 1.0, 1.5, attack=0.01), 0, 1.0), (self.tone(349, 0.28, "saw", 1.0, 1.5, attack=0.01), 0, 0.9)), "lp", 1500, 0.8), vol)
+
+    def squeak(self, vol=0.4, variant=None):
+        r, k = self._v("squeak", variant)
+        f = r.uniform(1800, 2600)
+        return _peak(self.tone(f, 0.12, "sine", 1.0, 3, sweep=f * 1.5), vol)
+
+    def trombone(self, vol=0.5):
+        notes = (("D3", 0.42), ("Db3", 0.42), ("C3", 0.42), ("B2", 1.0))
+        parts = []
+        for j, (nm, d) in enumerate(notes):
+            f = note_freq(nm)
+            parts.append((_biquad(self.tone(f, d, "saw", 1.0, 0.8, sweep=f * (0.93 if j == 3 else 0.98), attack=0.04), "lp", 900, 1.2), 0.0))
+        return _peak(_concat(*parts), vol)
+
 
 sfx = _Sfx()
+
+
+# ---- sound files and free sounds from the internet ----
+class SoundError(RuntimeError):
+    """A sound could not be read, found or downloaded. The message says what to do."""
+
+
+UA = "LumoCode-lumovideo/%s (+https://github.com/alfar988/Lumo-code)" % __version__
+_SOUND_EXT = (".wav", ".mp3", ".ogg", ".oga", ".flac", ".m4a", ".aac", ".opus")
+
+
+def _sound_dir(folder=None):
+    return os.path.abspath(folder or os.environ.get("LUMO_SOUNDS_DIR") or SOUND_DIR)
+
+
+def _slug(text):
+    return re.sub(r"[^a-z0-9]+", "-", str(text).lower()).strip("-")
+
+
+def _read_wav(path):
+    with wave.open(path, "rb") as w:
+        ch, sw, rate, n = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()
+        raw = w.readframes(n)
+    if sw == 2:
+        a = array.array("h")
+        a.frombytes(raw[:len(raw) // 2 * 2])
+        if sys.byteorder == "big":
+            a.byteswap()
+        vals = [x / 32768.0 for x in a]
+    elif sw == 1:
+        vals = [(b - 128) / 128.0 for b in raw]
+    elif sw == 3:
+        vals = [int.from_bytes(raw[i:i + 3], "little", signed=True) / 8388608.0 for i in range(0, len(raw) - 2, 3)]
+    elif sw == 4:
+        a = array.array("i")
+        a.frombytes(raw[:len(raw) // 4 * 4])
+        if sys.byteorder == "big":
+            a.byteswap()
+        vals = [x / 2147483648.0 for x in a]
+    else:
+        raise SoundError("unsupported WAV format (%d-bit)" % (sw * 8))
+    if ch > 1:
+        vals = [sum(vals[i:i + ch]) / ch for i in range(0, len(vals) - ch + 1, ch)]
+    buf = array.array("f", vals)
+    return buf if rate == SR else _pitch(buf, rate / float(SR))
+
+
+def _decode_ffmpeg(path, start=0.0, dur=None):
+    ff = ffmpeg_path()
+    if not ff:
+        raise SoundError("ffmpeg is needed to read %s files (Termux: pkg install ffmpeg). A .wav file works without it." % (os.path.splitext(path)[1] or "this kind of"))
+    cmd = [ff, "-v", "error", "-nostdin"]
+    if start:
+        cmd += ["-ss", "%.3f" % start]
+    cmd += ["-i", path]
+    if dur:
+        cmd += ["-t", "%.3f" % dur]
+    cmd += ["-vn", "-ac", "1", "-ar", str(SR), "-f", "s16le", "-"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise SoundError("ffmpeg could not run: %s" % e)
+    if r.returncode != 0 or len(r.stdout) < 4:
+        raise SoundError("ffmpeg could not read %s: %s" % (os.path.basename(path), r.stderr.decode("utf-8", "replace").strip()[-200:] or "no audio found"))
+    a = array.array("h")
+    a.frombytes(r.stdout[:len(r.stdout) // 2 * 2])
+    if sys.byteorder == "big":
+        a.byteswap()
+    return array.array("f", [x / 32768.0 for x in a])
+
+
+def _trim_silence(buf):
+    pk = max(map(abs, buf)) if len(buf) else 0.0
+    if pk < 1e-6:
+        return buf
+    lo_t, hi_t = pk * 0.02, pk * 0.004
+    n = len(buf)
+    lo = next((i for i in range(n) if abs(buf[i]) >= lo_t), 0)
+    hi = next((i for i in range(n - 1, -1, -1) if abs(buf[i]) >= hi_t), n - 1)
+    return buf[max(0, lo - 220):min(n, hi + 2205)]
+
+
+def load_sound(path, vol=1.0, start=0.0, dur=None, normalize=True, trim=True):
+    """Read a sound file (wav always; mp3, ogg, flac, m4a ... with ffmpeg) into a mono buffer that v.sound(...) and Mixer.add(...) accept.
+    start / dur pick a part in seconds, trim removes silence at both ends, normalize sets the loudest point to 90 percent, vol scales after that."""
+    p = path
+    if not os.path.isfile(p):
+        alt = os.path.join(_sound_dir(), path)
+        if not os.path.isfile(alt):
+            raise SoundError("sound file not found: %s (looked in the current folder and in %s)" % (path, _sound_dir()))
+        p = alt
+    buf = None
+    if p.lower().endswith(".wav"):
+        try:
+            buf = _read_wav(p)
+            s0 = int(start * SR)
+            buf = buf[s0:s0 + int(dur * SR)] if dur else buf[s0:]
+        except (wave.Error, EOFError, SoundError):
+            buf = None
+    if buf is None:
+        buf = _decode_ffmpeg(p, start, dur)
+    if trim:
+        buf = _trim_silence(buf)
+    if normalize:
+        buf = _peak(buf, 0.9)
+    if vol != 1.0:
+        buf = _scale(buf, vol)
+    return _fade(buf, 0.0, 0.015)
+
+
+def _write_wav(path, buf):
+    a = array.array("h", [int(max(-32767.0, min(32767.0, x * 32767.0))) for x in buf])
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes(a.tobytes() if sys.byteorder == "little" else _swap(a))
+
+
+def _safe_url(url):
+    """Only https, and never an address inside this device or network (a link must not be able to reach private services)."""
+    u = urllib.parse.urlparse(url)
+    if u.scheme != "https" or not u.hostname:
+        raise SoundError("only https:// links are allowed for downloads")
+    try:
+        infos = socket.getaddrinfo(u.hostname, u.port or 443, proto=socket.IPPROTO_TCP)
+    except OSError as e:
+        raise SoundError("cannot reach %s (%s)" % (u.hostname, e))
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+            raise SoundError("%s points to a private address; refused" % u.hostname)
+    return url
+
+
+class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _safe_url(newurl)
+        return urllib.request.HTTPRedirectHandler.redirect_request(self, req, fp, code, msg, headers, newurl)
+
+
+def _http_get(url, headers=None, timeout=20, max_bytes=15 * 1024 * 1024):
+    _safe_url(url)
+    req = urllib.request.Request(url, headers=dict({"User-Agent": UA, "Accept": "*/*"}, **(headers or {})))
+    opener = urllib.request.build_opener(_SafeRedirect())
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            data = bytearray()
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                data += chunk
+                if len(data) > max_bytes:
+                    raise SoundError("the file is larger than %d MB; cancelled" % (max_bytes >> 20))
+            return bytes(data), (resp.headers.get("Content-Type") or "")
+    except SoundError:
+        raise
+    except urllib.error.HTTPError as e:
+        raise SoundError("the server answered %s (%s)" % (e.code, urllib.parse.urlparse(url).netloc))
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise SoundError("no internet connection or the server is down (%s)" % (getattr(e, "reason", None) or e))
+
+
+def _json_get(url, headers=None):
+    data, _ = _http_get(url, headers, max_bytes=3 * 1024 * 1024)
+    try:
+        return json.loads(data.decode("utf-8", "replace"))
+    except ValueError:
+        raise SoundError("the sound service sent something that is not JSON")
+
+
+def _license_code(text):
+    t = (text or "").lower()
+    if "zero" in t or "cc0" in t or t.strip() == "cc0":
+        return "cc0"
+    if "publicdomain/mark" in t or t.strip() == "pdm":
+        return "pdm"
+    if "by-nc" in t or "noncommercial" in t.replace("-", "") or "by-nd" in t or "by-sa" in t:
+        return "other"
+    if "/by/" in t or t.strip() in ("by", "attribution"):
+        return "by"
+    return "other"
+
+
+def _search_openverse(q, limit, max_seconds, safe):
+    out = []
+    for cat in ("sound_effect", ""):
+        params = {"q": q, "page_size": str(min(20, max(limit * 3, 8)))}
+        if safe:
+            params["license"] = "cc0,pdm,by"
+        if cat:
+            params["category"] = cat
+        js = _json_get("https://api.openverse.org/v1/audio/?" + urllib.parse.urlencode(params))
+        for it in js.get("results", []) or []:
+            url = it.get("url") or ""
+            dur = (it.get("duration") or 0) / 1000.0
+            if not url.startswith("https://") or dur > 60:
+                continue
+            lic = it.get("license") or ""
+            out.append({"title": it.get("title") or q, "creator": it.get("creator") or "unknown", "license": ("cc-" + lic + (" " + str(it.get("license_version")) if it.get("license_version") else "")).strip() if lic else "unknown",
+                        "license_code": _license_code(lic), "duration": round(dur, 2), "url": url, "page": it.get("foreign_landing_url") or it.get("url"), "source": "openverse/" + str(it.get("source") or it.get("provider") or "")})
+        if out:
+            break
+    return out
+
+
+def _search_freesound(q, limit, max_seconds, safe):
+    key = os.environ.get("FREESOUND_API_KEY")
+    flt = "duration:[0 TO %d]" % max(2, int(max_seconds * 3))
+    if safe:
+        flt += ' (license:"Creative Commons 0" OR license:"Attribution")'
+    params = {"query": q, "filter": flt, "fields": "id,name,duration,license,username,previews,url", "page_size": str(min(15, max(limit * 3, 6)))}
+    js = _json_get("https://freesound.org/apiv2/search/text/?" + urllib.parse.urlencode(params), {"Authorization": "Token %s" % key})
+    out = []
+    for it in js.get("results", []) or []:
+        pv = it.get("previews") or {}
+        url = pv.get("preview-hq-mp3") or pv.get("preview-hq-ogg") or pv.get("preview-lq-mp3") or ""
+        if not url.startswith("https://"):
+            continue
+        code = _license_code(it.get("license"))
+        if safe and code == "other":
+            continue
+        out.append({"title": it.get("name") or q, "creator": it.get("username") or "unknown", "license": {"cc0": "CC0", "by": "CC-BY"}.get(code, it.get("license") or "unknown"), "license_code": code,
+                    "duration": round(float(it.get("duration") or 0), 2), "url": url, "page": it.get("url") or "https://freesound.org/", "source": "freesound"})
+    return out
+
+
+def find_sounds(query, limit=6, max_seconds=6.0, source="auto", safe=True):
+    """Search free sound effects on the internet. Returns a list of {title, creator, license, license_code, duration, url, page, source}.
+    source: 'auto' (Freesound when the FREESOUND_API_KEY environment variable is set, then Openverse), 'freesound' or 'openverse'.
+    safe=True keeps only CC0, public domain and CC-BY sounds (usable in a video you publish; CC-BY needs a credit, see sound_credits())."""
+    q = (query or "").strip()
+    if not q:
+        raise SoundError("what sound? give a few words, for example 'punch' or 'door slam'")
+    if source == "auto":
+        order = (["freesound"] if os.environ.get("FREESOUND_API_KEY") else []) + ["openverse"]
+    elif source in ("freesound", "openverse"):
+        order = [source]
+    else:
+        raise SoundError("source must be auto, freesound or openverse")
+    errors, found = [], []
+    for src in order:
+        if src == "freesound" and not os.environ.get("FREESOUND_API_KEY"):
+            errors.append("freesound: no FREESOUND_API_KEY set")
+            continue
+        try:
+            found = _search_freesound(q, limit, max_seconds, safe) if src == "freesound" else _search_openverse(q, limit, max_seconds, safe)
+        except SoundError as e:
+            errors.append("%s: %s" % (src, e))
+            continue
+        if found:
+            break
+    if not found and errors:
+        raise SoundError("; ".join(errors))
+    found.sort(key=lambda it: (it["duration"] > max_seconds, it["duration"]))
+    return found[:max(1, int(limit))]
+
+
+def fetch_sound(item, name=None, max_seconds=6.0, folder=None):
+    """Download one sound (an item from find_sounds or a direct https link to an audio file), cut it to max_seconds, convert it to a mono
+    WAV in the sounds folder and write the credit line to CREDITS.txt. Returns the WAV path. A sound that is already there is reused."""
+    if isinstance(item, str):
+        host = urllib.parse.urlparse(item).netloc
+        item = {"url": item, "title": name or os.path.splitext(os.path.basename(urllib.parse.urlparse(item).path))[0] or "sound", "creator": "unknown", "license": "unknown (check the source)", "page": item, "source": host}
+    url = item.get("url") or ""
+    folder = _sound_dir(folder)
+    os.makedirs(folder, exist_ok=True)
+    h = hashlib.sha1(url.encode("utf-8")).hexdigest()[:6]
+    slug = (_slug(name or item.get("title") or "sound")[:36] or "sound")
+    dest = os.path.join(folder, "%s-%s.wav" % (slug, h))
+    if os.path.isfile(dest):
+        return dest
+    data, ctype = _http_get(url)
+    ext = os.path.splitext(urllib.parse.urlparse(url).path)[1].lower()
+    if ext not in _SOUND_EXT:
+        ext = ".mp3" if "mpeg" in ctype else ".ogg" if "ogg" in ctype else ".wav" if "wav" in ctype else ".bin"
+    tmpf = os.path.join(folder, ".download-%s%s" % (h, ext))
+    with open(tmpf, "wb") as f:
+        f.write(data)
+    try:
+        buf = load_sound(tmpf, dur=max_seconds, normalize=True, trim=True)
+    finally:
+        try:
+            os.remove(tmpf)
+        except OSError:
+            pass
+    _write_wav(dest, buf)
+    line = '%s | "%s" by %s | license: %s | source: %s' % (os.path.basename(dest), item.get("title"), item.get("creator"), item.get("license"), item.get("page") or url)
+    try:
+        with open(os.path.join(folder, "CREDITS.txt"), "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+    return dest
+
+
+def sound_credits(folder=None):
+    """The credit lines of every downloaded sound (CC-BY sounds must be credited when you publish the video)."""
+    try:
+        with open(os.path.join(_sound_dir(folder), "CREDITS.txt"), encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _read_json_file(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+_GUESS = {"swish": "whoosh", "swoosh": "whoosh", "footstep": "step", "footsteps": "step", "walk": "step", "door": "thud", "slam": "thud", "bang": "boom", "glass": "crack",
+          "wood": "crack", "sword": "clang", "metal": "clang", "clash": "clang", "gunshot": "boom", "laser": "laser", "blast": "explosion", "bomb": "explosion",
+          "clap": "applause", "scream": "pain", "yell": "kiai", "shout": "kiai", "cheering": "cheer", "water": "splash", "bubble": "pop", "storm": "thunder"}
+
+
+def _sfx_net(self, query, n=3, pick=0, max_seconds=4.0, fallback=None, vol=1.0, source="auto", folder=None):
+    """A real recording from the internet (free CC0 / CC-BY sounds, cached in the sounds folder so it downloads once).
+    sfx.net('punch'), sfx.net('footstep gravel', pick=2) for another take. Without internet it returns a synthesised effect instead
+    (fallback='punch' or a function picks which) and says so in the log, so the render never fails because of a missing connection."""
+    d = _sound_dir(folder)
+    key = _slug(query)
+    idx_path = os.path.join(d, "index.json")
+    idx = _read_json_file(idx_path)
+    files = [os.path.join(d, f) for f in idx.get(key, []) if os.path.isfile(os.path.join(d, f))]
+    if not files:
+        try:
+            files = []
+            for it in find_sounds(query, limit=max(1, n), max_seconds=max_seconds, source=source):
+                try:
+                    files.append(fetch_sound(it, name=query, max_seconds=max_seconds, folder=d))
+                except SoundError as e:
+                    print("  ! skipped one sound for %r: %s" % (query, e), flush=True)
+                if len(files) >= n:
+                    break
+            if files:
+                idx[key] = [os.path.basename(f) for f in files]
+                os.makedirs(d, exist_ok=True)
+                with open(idx_path, "w", encoding="utf-8") as f:
+                    json.dump(idx, f, indent=1)
+        except SoundError as e:
+            print("  ! no internet sound for %r (%s); using a synthesised effect" % (query, e), flush=True)
+    if files:
+        return load_sound(files[int(pick) % len(files)], vol=vol)
+    if callable(fallback):
+        return fallback()
+    if isinstance(fallback, str) and fallback in self.names():
+        return self.get(fallback)
+    words = re.findall(r"[a-z]+", query.lower())
+    names = self.names()
+    for w in words:
+        if w in names:
+            return self.get(w)
+        if w in _GUESS:
+            return self.get(_GUESS[w])
+    return self.hit(0.8)
+
+
+_Sfx.net = _sfx_net
+_Sfx.file = lambda self, path, vol=1.0, start=0.0, dur=None, normalize=True, trim=True: load_sound(path, vol, start, dur, normalize, trim)
+_Sfx.file.__doc__ = "A sound file as a buffer: sfx.file('sounds/punch.wav'). See load_sound."
+
 
 
 class _Music:
@@ -902,7 +1905,7 @@ class _Music:
         rnd = random.Random(seed)
         root = note_freq(key + "2")
         prog = [0, -4, 3, -2]                                  # i - VI - III - VII in the minor key
-        kick, snare, hat, hat_o = sfx.kick(0.9), sfx.snare(0.6), sfx.hat(0.5), sfx.hat(0.5, True)
+        kick, snare, hat, hat_o = sfx.kick(0.9, variant=0), sfx.snare(0.6, variant=0), sfx.hat(0.5, variant=0), sfx.hat(0.5, True, variant=1)
         scale = [0, 3, 5, 7, 10, 12]
         for bar in range(bars):
             r0 = root * 2 ** (prog[bar % 4] / 12.0)
@@ -966,11 +1969,13 @@ music = _Music()
 # Video: scenes, transitions, render to MP4, automatic checks
 # ======================================================================================
 QUALITY = {
-    "draft": dict(scale=0.375, ss=1, fps=15, crf=29, preset="ultrafast"),       # fast preview, 480x270
-    "standard": dict(scale=2 / 3.0, ss=2, fps=30, crf=22, preset="veryfast"),    # 854x480, the default
-    "hd": dict(scale=1.0, ss=2, fps=60, crf=20, preset="veryfast"),              # 1280x720
-    "fhd": dict(scale=1.5, ss=2, fps=60, crf=19, preset="veryfast"),             # 1920x1080
+    "draft": dict(scale=0.375, ss=1, fps=24, crf=29, preset="ultrafast", blur=1),        # fast preview, 480x270
+    "standard": dict(scale=2 / 3.0, ss=2, fps=60, crf=21, preset="veryfast", blur=1),    # 854x480, smooth 60 fps, the default
+    "hd": dict(scale=1.0, ss=2, fps=60, crf=19, preset="veryfast", blur=1),              # 1280x720
+    "fhd": dict(scale=1.5, ss=2, fps=60, crf=18, preset="veryfast", blur=1),             # 1920x1080
 }
+# blur = samples drawn per output frame and averaged (motion blur). At 60 fps one sample is enough; a script that asks for 30 fps or less
+# automatically gets 3 samples so fast moves do not look choppy. Video(..., blur=N) or LUMO_VIDEO_BLUR=N overrides it.
 
 
 def ffmpeg_path():
@@ -1034,10 +2039,16 @@ class Video:
     """A video made of scenes. v = Video(1280, 720, fps=30); v.scene(4.0, my_draw_function); v.render().
 
     Coordinates are always in the width x height you give here (1280x720 by default). quality ('draft', 'standard', 'hd', 'fhd') only changes
-    the output resolution, frame rate and encoder effort, never your drawing code. The environment variable LUMO_VIDEO_QUALITY overrides it."""
+    the output resolution, frame rate and encoder effort, never your drawing code. The environment variable LUMO_VIDEO_QUALITY overrides it.
+    fps: leave it out for the smooth default of the quality (60 fps; draft 24). A number is an upper limit (fps=30 gives 30 fps with motion blur).
+    blur: samples averaged per frame (motion blur). None = automatic, 1 = off, 3-4 = soft and filmic."""
 
-    def __init__(self, width=1280, height=720, fps=30, quality=None, bg="#000000", seed=0, title=None):
-        self.w, self.h, self.fps, self.bg, self.seed, self.title = int(width), int(height), int(fps), bg, seed, title
+    SHUTTER = 0.5                        # exposure as a fraction of the frame time (0.5 = the 180 degree shutter of film)
+
+    def __init__(self, width=1280, height=720, fps=None, quality=None, bg="#000000", seed=0, title=None, blur=None):
+        self.w, self.h, self.bg, self.seed, self.title = int(width), int(height), bg, seed, title
+        self.fps = None if fps is None else int(fps)
+        self.blur = blur
         self.quality = quality or "standard"
         self.scenes = []
         self.sounds = []
@@ -1066,6 +2077,13 @@ class Video:
         """Add a sound effect or music buffer (see sfx and music) at a time in seconds."""
         self.sounds.append((snd, at, vol, pan))
 
+    def sfx(self, what, at=0.0, vol=1.0, pan=0.0, **kw):
+        """Add a sound effect by name: v.sfx('punch', 1.5), v.sfx('whoosh', 0.9, vol=0.6, dur=0.4). `what` can also be a buffer.
+        Names: see sfx.names(); each call sounds a little different. Returns the buffer."""
+        buf = sfx.get(what, **kw) if isinstance(what, str) else what
+        self.sounds.append((buf, at, vol, pan))
+        return buf
+
     @property
     def duration(self):
         return max([s.end for s in self.scenes] or [0.0])
@@ -1075,7 +2093,52 @@ class Video:
         spec = QUALITY[q]
         pw = max(2, int(round(self.w * spec["scale"] / 2.0)) * 2)
         ph = max(2, int(round(self.h * spec["scale"] / 2.0)) * 2)
-        return pw, ph, spec["ss"], min(self.fps, spec["fps"])
+        return pw, ph, spec["ss"], (spec["fps"] if self.fps is None else max(1, min(self.fps, spec["fps"])))
+
+    def _blur_samples(self, q, fps):
+        env = os.environ.get("LUMO_VIDEO_BLUR")
+        if env:
+            try:
+                return max(1, min(8, int(env)))
+            except ValueError:
+                pass
+        if self.blur is not None:
+            n = 3 if self.blur is True else 1 if self.blur is False else int(self.blur)
+        else:
+            n = QUALITY[q].get("blur", 1)
+            if q != "draft" and fps <= 36:
+                n = max(n, 3)                                        # 30 fps (or less) looks choppy on fast moves without blur
+        return max(1, min(8, n))
+
+    def _sample_times(self, T, fps, n):
+        """The instants averaged into one frame: spread over the shutter time around T, kept inside the scene (a cut stays a hard cut)."""
+        if n <= 1:
+            return [T]
+        span = self.SHUTTER / float(fps)
+        ts = [T + ((k + 0.5) / n - 0.5) * span for k in range(n)]
+        active = [s for s in self.scenes if s.start <= T < s.end]
+        if len(active) == 1:
+            lo, hi = active[0].start, active[0].end - 1e-6
+        else:
+            lo, hi = 0.0, self.duration - 1e-6
+        return [min(hi, max(lo, x)) for x in ts]
+
+    def render_frame(self, T, quality=None, fps=None, samples=None):
+        """The frame at time T exactly as render() writes it (motion blur included), as a PIL image."""
+        q = quality or self.quality
+        geo = self._geometry(q)
+        fps = fps or geo[3]
+        n = samples if samples is not None else self._blur_samples(q, fps)
+        imgs = [self.frame_at(x, q, fps) for x in self._sample_times(T, fps, n)]
+        acc = imgs[0]
+        for k in range(1, len(imgs)):
+            acc = Image.blend(acc, imgs[k], 1.0 / (k + 1))
+        return acc
+
+    def _raw_frame(self, T, q, fps, samples):
+        img = self.render_frame(T, q, fps, samples)
+        small = img.convert("L").resize((48, 27), Image.BOX)
+        return img.tobytes(), small.tobytes()
 
     def _canvas(self, sc, T, frame, geo, fps):
         pw, ph, ss, _ = geo
@@ -1151,9 +2214,82 @@ class Video:
         return _qa(stats, self.duration, bool(self.sounds), sampled=True)
 
     # ---- render ----
-    def render(self, path=None, quality=None, progress=True):
+    def _workers(self, total, workers, q, fps):
+        n = workers if workers is not None else os.environ.get("LUMO_VIDEO_WORKERS")
+        try:
+            n = int(n) if n not in (None, "") else None
+        except ValueError:
+            n = None
+        if n is None:
+            try:
+                cpus = len(os.sched_getaffinity(0))
+            except (AttributeError, OSError):
+                cpus = os.cpu_count() or 1
+            n = min(cpus, 4)                                         # phones get hot: four cores are plenty
+        if n < 2 or total < 48 or "fork" not in multiprocessing.get_all_start_methods():
+            return 1
+        return min(n, 8)
+
+    def _stable(self, q, fps):
+        """True when drawing the same time twice gives the same picture (no hidden state), which parallel rendering needs."""
+        try:
+            T = self.duration * 0.37
+            a = self.render_frame(T, q, fps, 1).tobytes()
+            self.render_frame(self.duration * 0.71, q, fps, 1)
+            return a == self.render_frame(T, q, fps, 1).tobytes()
+        except Exception:
+            return False
+
+    def _iter_parallel(self, q, fps, total, samples, workers):
+        _PAR["job"] = (self, q, fps, samples)
+        ctx = multiprocessing.get_context("fork")
+        ex = concurrent.futures.ProcessPoolExecutor(max_workers=workers, mp_context=ctx)
+        pending, nxt = collections.deque(), 0
+        try:
+            while nxt < total and len(pending) < workers * 3:
+                pending.append(ex.submit(_par_frame, nxt))
+                nxt += 1
+            while pending:
+                i, raw, small, tb = pending.popleft().result()
+                if tb:
+                    raise _FrameError(i, tb)
+                if nxt < total:
+                    pending.append(ex.submit(_par_frame, nxt))
+                    nxt += 1
+                yield raw, small
+        finally:
+            try:
+                for p in list(getattr(ex, "_processes", {}).values()):
+                    p.terminate()
+            except Exception:
+                pass
+            try:
+                ex.shutdown(wait=False, cancel_futures=True)
+            except TypeError:                                         # Python 3.8
+                ex.shutdown(wait=False)
+            _PAR.clear()
+
+    def _iter_frames(self, q, fps, total, samples, workers):
+        """Yield (rgb bytes, small gray bytes) for every frame, in order, using several processes when that is safe."""
+        produced = 0
+        if workers > 1 and self._stable(q, fps):
+            try:
+                for item in self._iter_parallel(q, fps, total, samples, workers):
+                    produced += 1
+                    yield item
+                return
+            except _FrameError as e:                                  # a bug in the script: show it with a normal traceback
+                self._raw_frame(e.index / float(fps), q, fps, samples)
+                raise RuntimeError("the animation failed on frame %d:\n%s" % (e.index, e.tb))
+            except Exception as e:
+                print("  ! parallel rendering stopped (%s); continuing on one core" % (str(e) or type(e).__name__), flush=True)
+        for i in range(produced, total):
+            yield self._raw_frame(i / float(fps), q, fps, samples)
+
+    def render(self, path=None, quality=None, progress=True, workers=None):
         """Render the whole video to an MP4 (H.264 yuv420p + AAC, plays in every player). Returns a report dict and prints it as one
-        'LUMO_VIDEO_REPORT {...}' line. The path: $LUMO_VIDEO_OUT if set, else the path you pass, else videos/<script name>.mp4."""
+        'LUMO_VIDEO_REPORT {...}' line. The path: $LUMO_VIDEO_OUT if set, else the path you pass, else videos/<script name>.mp4.
+        Several CPU cores draw frames at the same time (workers=1 or LUMO_VIDEO_WORKERS=1 turns that off)."""
         if Image is None:
             raise RuntimeError("Pillow is not installed: pkg install python-pillow  (or: pip install pillow)")
         if not self.scenes:
@@ -1165,49 +2301,52 @@ class Video:
         os.makedirs(os.path.dirname(out), exist_ok=True)
         geo = self._geometry(q)
         pw, ph, ss, fps = geo
-        total = max(1, int(math.ceil(self.duration * fps - 1e-9)))
         ff = ffmpeg_path()
+        gif = ff is None
+        if gif:
+            fps = min(fps, 20)                                       # GIF players ignore delays under 20 ms
+        total = max(1, int(math.ceil(self.duration * fps - 1e-9)))
+        samples = self._blur_samples(q, fps)
+        nworkers = self._workers(total, workers, q, fps)
         t0 = time.time()
         if not ff and os.environ.get("LUMO_VIDEO_REQUIRE_FFMPEG"):
             raise RuntimeError("ffmpeg is not installed: pkg install ffmpeg  (Termux)  |  sudo apt install ffmpeg")
         tmp = tempfile.mkdtemp(prefix="lumovideo_")
+        proc = errf = None
         try:
-            gif = ff is None
             if gif:
                 out = os.path.splitext(out)[0] + ".gif"
                 print("  ! ffmpeg is not installed, writing a GIF instead (no sound). For a real MP4: pkg install ffmpeg", flush=True)
             audio = None if gif else self._audio_file(tmp, self.duration)
-            proc = None
             if not gif:
-                enc = ["-c:v", "libx264", "-preset", QUALITY[q]["preset"], "-crf", str(QUALITY[q]["crf"])] if _have_libx264() else ["-c:v", "mpeg4", "-q:v", "4"]
+                enc = ["-c:v", "libx264", "-preset", QUALITY[q]["preset"], "-crf", str(QUALITY[q]["crf"])] if _have_libx264() else ["-c:v", "mpeg4", "-q:v", "3"]
                 cmd = [ff, "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "%dx%d" % (pw, ph), "-r", str(fps), "-i", "-"]
                 if audio:
                     cmd += ["-i", audio]
                 cmd += enc + ["-pix_fmt", "yuv420p", "-movflags", "+faststart", "-t", "%.3f" % self.duration]
                 if audio:
-                    cmd += ["-c:a", "aac", "-b:a", "160k", "-ar", "44100"]
+                    cmd += ["-c:a", "aac", "-b:a", "192k", "-ar", "44100"]
                 cmd.append(out)
                 errf = open(os.path.join(tmp, "ffmpeg.log"), "wb")
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=errf)
-            frames, stats, prev, last_print = [], [], None, 0.0
-            for i in range(total):
-                T = i / float(fps)
-                img = self.frame_at(T, q, fps)
-                small = img.convert("L").resize((48, 27), Image.BOX)
+            frames, stats, prev, last_print, done = [], [], None, 0.0, 0
+            for raw, small_raw in self._iter_frames(q, fps, total, samples, nworkers):
+                small = Image.frombytes("L", (48, 27), small_raw)
                 stats.append(frame_stats(small, prev))
                 prev = small
+                done += 1
                 if proc is not None:
                     try:
-                        proc.stdin.write(img.tobytes())
+                        proc.stdin.write(raw)
                     except (BrokenPipeError, OSError):
                         break
                 else:
-                    frames.append(img.convert("P", palette=Image.ADAPTIVE, colors=128))
-                if progress and (time.time() - last_print > 0.5 or i == total - 1):
+                    frames.append(Image.frombytes("RGB", (pw, ph), raw).convert("P", palette=Image.ADAPTIVE, colors=128))
+                if progress and (time.time() - last_print > 0.5 or done == total):
                     last_print = time.time()
                     el = last_print - t0
-                    rate = (i + 1) / max(el, 1e-6)
-                    sys.stdout.write("\r  rendering %3d%% · frame %d/%d · %.1f fps · ~%ds left   " % (100 * (i + 1) // total, i + 1, total, rate, (total - i - 1) / max(rate, 1e-6)))
+                    rate = done / max(el, 1e-6)
+                    sys.stdout.write("\r  rendering %3d%% · frame %d/%d · %.1f fps · ~%ds left   " % (100 * done // total, done, total, rate, (total - done) / max(rate, 1e-6)))
                     sys.stdout.flush()
             if progress:
                 sys.stdout.write("\n")
@@ -1224,12 +2363,131 @@ class Video:
             else:
                 frames[0].save(out, save_all=True, append_images=frames[1:], duration=int(1000 / fps), loop=0, optimize=False)
         finally:
+            try:
+                if proc is not None and proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+                if errf is not None and not errf.closed:
+                    errf.close()
+            except Exception:
+                pass
             shutil.rmtree(tmp, ignore_errors=True)
         rep = {"file": out, "format": "gif" if gif else "mp4", "width": pw, "height": ph, "fps": fps, "frames": total, "duration": round(total / float(fps), 2),
                "quality": q, "audio": bool(audio), "size_kb": int(os.path.getsize(out) / 1024), "render_s": round(time.time() - t0, 1),
-               "qa": _qa(stats, self.duration, bool(audio))}
+               "blur": samples, "workers": nworkers, "qa": _qa(stats, self.duration, bool(audio))}
         print("LUMO_VIDEO_REPORT " + json.dumps(rep), flush=True)
+        if not os.environ.get("LUMO_VIDEO_TOOL"):                       # run by hand: say how to watch it
+            print(play_hints(out), flush=True)
         return rep
+
+
+_PAR = {}
+
+
+class _FrameError(Exception):
+    def __init__(self, index, tb):
+        Exception.__init__(self, "frame %d failed" % index)
+        self.index, self.tb = index, tb
+
+
+def _par_frame(i):
+    """Runs inside a worker process (forked, so it already holds the whole video): draw frame i."""
+    v, q, fps, samples = _PAR["job"]
+    try:
+        raw, small = v._raw_frame(i / float(fps), q, fps, samples)
+        return i, raw, small, None
+    except BaseException:
+        return i, None, None, traceback.format_exc()
+
+
+# ---- how to watch the result ----
+def _is_termux():
+    return bool(os.environ.get("TERMUX_VERSION")) or "com.termux" in os.environ.get("PREFIX", "") or os.path.isdir("/data/data/com.termux/files")
+
+
+def _movies_dir():
+    """The phone's Movies folder when Termux may write to it (after termux-setup-storage), else None."""
+    home = os.path.expanduser("~")
+    for p in (os.path.join(home, "storage", "movies"), "/storage/emulated/0/Movies", "/sdcard/Movies"):
+        if os.path.isdir(p) and os.access(p, os.W_OK):
+            return p
+    return None
+
+
+def play_hints(path):
+    """Plain text that tells a person how to watch the video on this device (Termux, Linux, macOS, Windows)."""
+    p = os.path.abspath(path)
+    name = os.path.basename(p)
+    q = shlex.quote(p)
+    lines = ["", "  ▶ How to play: %s" % p]
+    if _is_termux():
+        lines.append("    1. Open it now:        termux-open %s" % q)
+        if _movies_dir():
+            lines.append("    2. Put it in Gallery:  cp %s %s/    (then open Gallery, Files, VLC or MX Player)" % (q, shlex.quote(_movies_dir())))
+        else:
+            lines.append("    2. Put it in Gallery:  termux-setup-storage   (once, tap Allow), then: cp %s ~/storage/movies/" % q)
+        lines.append("    3. Inside Lumo Code:   /play %s    (opens it, or copies it to your Movies folder with /play --gallery)" % name)
+    elif sys.platform == "darwin":
+        lines.append("    Open it:  open %s" % q)
+    elif sys.platform.startswith("win"):
+        lines.append("    Open it:  start \"\" %s" % q)
+    else:
+        lines.append("    Open it:  xdg-open %s     (or: mpv %s / vlc %s)" % (q, q, q))
+    lines.append("    Any player works (MP4 with H.264 video and AAC sound): VLC, MX Player, Google Photos, the phone Gallery.")
+    return "\n".join(lines)
+
+
+def open_video(path, gallery=False):
+    """Try to start the device player; with gallery=True also copy the file into the phone's Movies folder.
+    Returns {'ok': bool, 'via': str, 'copied': path or None, 'message': str}."""
+    p = os.path.abspath(path)
+    res = {"ok": False, "via": None, "copied": None, "message": ""}
+    if not os.path.isfile(p):
+        res["message"] = "no such file: %s" % p
+        return res
+    target = p
+    if gallery:
+        md = _movies_dir()
+        if md:
+            try:
+                dest_dir = os.path.join(md, "Lumo")
+                os.makedirs(dest_dir, exist_ok=True)
+                target = os.path.join(dest_dir, os.path.basename(p))
+                shutil.copyfile(p, target)
+                res["copied"] = target
+                scan = shutil.which("termux-media-scan")
+                if scan:
+                    subprocess.run([scan, target], capture_output=True, timeout=20)
+            except OSError as e:
+                res["message"] = "could not copy to the Movies folder (%s). " % e
+                target = p
+        else:
+            res["message"] = "the Movies folder is not reachable: run termux-setup-storage once and allow access, then try again. "
+    opener = None
+    if sys.platform == "darwin":
+        opener = shutil.which("open")
+    elif sys.platform.startswith("win"):
+        try:
+            os.startfile(target)                                   # noqa: the Windows way to open a file
+            res.update(ok=True, via="startfile")
+            return res
+        except OSError:
+            opener = None
+    else:
+        opener = shutil.which("termux-open") or shutil.which("xdg-open")
+    if opener:
+        try:
+            r = subprocess.run([opener, target], capture_output=True, timeout=15)
+            res.update(ok=(r.returncode == 0), via=os.path.basename(opener))
+            if r.returncode != 0:
+                res["message"] += "the player launcher returned an error. "
+        except (OSError, subprocess.SubprocessError) as e:
+            res["message"] += "could not start the player (%s). " % e
+    else:
+        res["message"] += "no player launcher found (Termux: pkg install termux-tools). "
+    if not res["ok"]:
+        res["message"] += "Open the file from your Gallery or file manager: %s" % target
+    return res
 
 
 def _qa(stats, duration, has_audio, sampled=False):
@@ -1351,6 +2609,21 @@ POSES = {
     "bow": dict(lean=40, head=10, lua=10, lfa=30, rua=14, rfa=30, lth=-8, lsh=0, rth=10, rsh=0),
     "jump": dict(lean=0, lua=60, lfa=140, rua=70, rfa=150, lth=-30, lsh=50, rth=40, rsh=60, lift=60),
 }
+POSES.update({
+    "hook_wind": dict(lean=-6, head=-4, lua=-62, lfa=-20, rua=44, rfa=138, lth=-40, lsh=14, rth=42, rsh=-10, hx=-8),
+    "hook": dict(lean=24, head=6, lua=98, lfa=128, rua=46, rfa=136, lth=-48, lsh=24, rth=44, rsh=-14, hx=14),
+    "elbow_wind": dict(lean=2, rua=40, rfa=140, lua=30, lfa=120, lth=-34, lsh=12, rth=38, rsh=-8, hx=-4),
+    "elbow": dict(lean=22, rua=96, rfa=214, lua=40, lfa=130, lth=-40, lsh=18, rth=44, rsh=-12, hx=16),
+    "knee_wind": dict(lean=14, lua=52, lfa=150, rua=64, rfa=152, lth=-30, lsh=26, rth=34, rsh=-30, hx=-6),
+    "knee": dict(lean=20, lua=60, lfa=150, rua=70, rfa=150, lth=-8, lsh=0, rth=104, rsh=8, hx=12),
+    "axe_wind": dict(lean=-22, lua=60, lfa=110, rua=110, rfa=140, lth=-4, lsh=0, rth=146, rsh=160, hx=-4),
+    "axe": dict(lean=8, lua=40, lfa=100, rua=90, rfa=120, lth=-14, lsh=4, rth=100, rsh=98, hx=8),
+    "super_wind": dict(lean=26, lua=-20, lfa=40, rua=30, rfa=110, lth=-62, lsh=70, rth=66, rsh=-60, hx=-8),
+    "super": dict(lean=64, head=-10, lua=-30, lfa=-10, rua=96, rfa=98, lth=-70, lsh=-40, rth=-48, rsh=-26, lift=52),
+    "recoil": dict(lean=-34, head=-24, lua=108, lfa=62, rua=122, rfa=74, lth=-22, lsh=8, rth=54, rsh=18, hx=-14, lift=6),
+    "tuck": dict(lean=36, head=10, lua=40, lfa=150, rua=50, rfa=150, lth=-100, lsh=-30, rth=96, rsh=-90, lift=96, roll=-170),
+    "flip_land": dict(lean=22, lua=44, lfa=140, rua=60, rfa=150, lth=-58, lsh=58, rth=64, rsh=-46, hx=-6),
+})
 for _k in list(POSES):
     POSES[_k] = dict(_BASE_POSE, **POSES[_k])
 
@@ -1412,6 +2685,11 @@ MOVES = {m.name: m for m in [
     Move("round_kick", 0.80, [(0, "guard"), (0.22, "round_chamber"), (0.34, "round_kick", "out_quad"), (0.46, "round_kick"), (0.80, "guard")], hit=0.34, reach=104, dmg=14, kind="head", limb="foot_l", snd="kick", lunge=16, knock=60),
     Move("sweep", 0.64, [(0, "guard"), (0.13, "sweep_wind"), (0.25, "sweep", "out_quad"), (0.40, "sweep"), (0.64, "guard")], hit=0.25, reach=92, dmg=7, kind="legs", limb="foot_r", snd="kick", lunge=10, knock=30),
     Move("flying_kick", 0.95, [(0, "guard"), (0.16, "crouch"), (0.34, "flying", "out_quad"), (0.58, "flying"), (0.80, "kick_chamber"), (0.95, "guard")], hit=0.5, reach=112, dmg=16, kind="body", limb="foot_l", snd="kick", travel=120, knock=70, launch=True),
+    Move("hook", 0.58, [(0, "guard"), (0.12, "hook_wind"), (0.22, "hook", "out_quad"), (0.32, "hook"), (0.58, "guard")], hit=0.22, reach=78, dmg=10, kind="head", limb="hand_l", snd="punch", lunge=20, knock=36),
+    Move("elbow", 0.46, [(0, "guard"), (0.07, "elbow_wind"), (0.15, "elbow", "out_quad"), (0.26, "elbow"), (0.46, "guard")], hit=0.15, reach=54, dmg=8, kind="head", limb="elbow_r", snd="hit", lunge=18, knock=22),
+    Move("knee", 0.56, [(0, "guard"), (0.1, "knee_wind"), (0.2, "knee", "out_quad"), (0.32, "knee"), (0.56, "guard")], hit=0.2, reach=62, dmg=11, kind="body", limb="knee_r", snd="hit", lunge=24, knock=34),
+    Move("axe_kick", 0.84, [(0, "guard"), (0.22, "axe_wind"), (0.34, "axe", "in_quad"), (0.46, "axe"), (0.84, "guard")], hit=0.34, reach=100, dmg=13, kind="head", limb="foot_r", snd="kick", lunge=10, knock=40),
+    Move("superman_punch", 0.9, [(0, "guard"), (0.16, "super_wind"), (0.3, "super", "out_quad"), (0.52, "super"), (0.72, "jump", "in_out_quad"), (0.9, "guard")], hit=0.32, reach=118, dmg=15, kind="head", limb="hand_r", snd="punch", travel=96, knock=60, launch=True),
     Move("block", 0.55, [(0, "guard"), (0.08, "block"), (0.40, "block"), (0.55, "guard")], kind="body"),
     Move("duck", 0.55, [(0, "guard"), (0.10, "duck"), (0.40, "duck"), (0.55, "guard")]),
     Move("dodge", 0.50, [(0, "guard"), (0.10, "dodge"), (0.30, "dodge"), (0.50, "guard")], travel=0),
@@ -1423,6 +2701,9 @@ MOVES = {m.name: m for m in [
     Move("hit_body", 0.50, [(0, "guard"), (0.05, "hit_body", "out_quad"), (0.18, "hit_body"), (0.50, "guard")]),
     Move("stagger", 0.70, [(0, "guard"), (0.08, "stagger", "out_quad"), (0.30, "stagger"), (0.70, "guard")]),
     Move("blocked", 0.40, [(0, "block"), (0.06, "block"), (0.40, "block")]),
+    Move("knockback", 0.66, [(0, "guard"), (0.05, "recoil", "out_quad"), (0.3, "recoil"), (0.66, "guard", "in_out_quad")]),
+    Move("backflip", 0.78, [(0, "guard"), (0.1, "crouch"), (0.3, {**POSES["tuck"], "roll": -190}, "out_quad"), (0.52, {**POSES["tuck"], "roll": -330, "lift": 70}, "in_out_quad"),
+                            (0.64, {**POSES["flip_land"], "roll": -360}, "in_quad"), (0.78, "guard", "out_quad")], travel=0),
     Move("launch", 0.85, [(0, "guard"), (0.06, "hit_head", "out_quad"), (0.26, {**POSES["fall"], "lift": 90, "roll": -30}, "out_quad"), (0.56, "fall", "in_quad"), (0.85, "lying", "out_quad")]),
     Move("knockdown", 0.80, [(0, "guard"), (0.06, "hit_head", "out_quad"), (0.34, "fall", "in_out_quad"), (0.80, "lying", "out_bounce")]),
     Move("getup", 1.00, [(0, "lying"), (0.45, "kneel", "in_out_quad"), (1.0, "guard", "out_quad")]),
@@ -1490,12 +2771,14 @@ class Stick:
             J.update({"elbow_" + side: e, "hand_" + side: h, "knee_" + side: k, "foot_" + side: f, "toe_" + side: toe})
         return {k: loc(*v) for k, v in J.items()}
 
-    def draw(self, c, x, ground, facing, pose, t=0.0, trail=None, alpha=1.0):
+    def draw(self, c, x, ground, facing, pose, t=0.0, trail=None, alpha=1.0, flash=0.0):
         """Draw the figure standing at x on the ground line. trail: list of earlier poses (resolved) drawn as pale afterimages. Returns the joints."""
         q = pose if isinstance(pose, dict) and "y" in pose else resolve_pose(pose)
         s = self.scale
         col, dark = rgb(self.color), shade(self.color, -0.38)
         edge = shade(self.color, -0.85)
+        if flash > 0:                                                  # the body flashes white for a moment when it is hit
+            col, dark, edge = mix(col, "#ffffff", flash), mix(dark, "#ffffff", flash * 0.8), mix(edge, "#ffffff", flash * 0.5)
         lw = self.line * s
         # shadow on the ground
         h = q["y"] + q.get("lift", 0) * 0
@@ -1597,6 +2880,7 @@ class Stage:
         self.crowd = [(x, r.uniform(0.85, 1.15), r.choice(("#2a2f45", "#33283d", "#243a4a", "#3d3030", "#2e3a2a"))) for x in range(-600, width + 800, 26)]
         self.trees = [(r.uniform(-700, width + 900), r.uniform(0.8, 1.5), r.random()) for _ in range(26)]
         self.clouds = [(r.uniform(-500, width + 700), r.uniform(50, self.g * 0.45), r.uniform(120, 300), r.uniform(0.2, 0.6)) for _ in range(9)]
+        self.motes = [(r.uniform(0, width + 400), r.uniform(self.g * 0.15, self.g * 0.95), r.uniform(0.4, 1.4), r.uniform(0, 6.28), r.uniform(1.6, 4.2)) for _ in range(28)]
 
     # ---- helpers ----
     def _floor(self, c, top, bottom, line=None, planks=None):
@@ -1611,6 +2895,29 @@ class Stage:
 
     def draw(self, c, t=0.0):
         getattr(self, "_" + self.kind)(c, t)
+        self._ambient(c, t)
+
+    def _ambient(self, c, t):
+        """Slow floating specks (dust in the light, fireflies, embers) and camera flashes in the arena: the background is never quite still."""
+        k = self.kind
+        if k == "plain":
+            return
+        col = {"dojo": "#ffe2b0", "city_night": "#bcd0ff", "sunset": "#ffd9b0", "arena": "#ffffff", "forest": "#e9ff9a"}[k]
+        span, top, depth = self.W + 400.0, self.g * 0.15, self.g * 0.8
+        with c.parallax(0.85, 0.85):
+            for (x0, y0, sp, ph, r) in self.motes:
+                x = (x0 + t * 14.0 * sp) % span - 200.0 + 14.0 * math.sin(t * 0.6 + ph)
+                y = top + ((y0 - top) + 10.0 * math.sin(t * 0.8 * sp + ph) - t * (5.0 if k == "forest" else 2.0) * sp) % depth
+                a = 0.2 + 0.16 * math.sin(t * 1.4 + ph * 2.0)
+                c.circle(x, y, r * (1.5 if k == "forest" else 1.0), fill=col, alpha=max(0.05, a))
+        if k == "arena":
+            for j in range(4):
+                ph = (t * 0.55 + j * 0.31) % 1.0
+                if ph < 0.05:
+                    n = int(t * 0.55 + j * 0.31)
+                    fx = (n * 397 + j * 211) % int(self.W)
+                    with c.parallax(0.4, 0.3):
+                        c.glow(fx, self.g - 150 - (n * 53 % 90), 60, "#ffffff", 0.9 * (1 - ph / 0.05))
 
     # ---- kinds ----
     def _plain(self, c, t):
@@ -1779,9 +3086,14 @@ class Fight:
     By hand (times are in seconds of fight time):
         f.walk('a', to=520, at=0.5); f.attack('a', 'jab', at=2.0); f.attack('b', 'cross', at=2.8, hit=False)
         f.block('b', at=3.4); f.attack('a', 'round_kick', at=4.0, finisher=True); f.victory('a', at=5.5); f.text(4.3, 'K.O.')
-    Moves: jab cross uppercut front_kick round_kick sweep flying_kick. Other actions: block dodge duck taunt bow jump victory."""
+    Moves: jab cross hook elbow uppercut knee front_kick round_kick axe_kick sweep flying_kick superman_punch. Other actions: block dodge duck taunt bow jump step victory.
+    Every pose change is blended (no snapping between moves), the camera follows and punches in on hard hits, and the hits sound different each time."""
 
-    def __init__(self, a, b, stage="dojo", width=1280, height=720, ground=None, a_x=None, b_x=None, title=None, music=None, hud=True, seed=3, trails=True):
+    def __init__(self, a, b, stage="dojo", width=1280, height=720, ground=None, a_x=None, b_x=None, title=None, music=None, hud=True, seed=3, trails=True,
+                 voices=False, surface=None, sound_files=None):
+        self.voices, self.surface = voices, surface        # voices=True adds synthesised grunts and shouts; surface = wood|concrete|dirt|grass|gravel|metal|sand (footsteps)
+        self.sound_files = {k: (list(v) if isinstance(v, (list, tuple)) else [v]) for k, v in (sound_files or {}).items()}
+        self._packs, self._tracks, self._flashes = {}, None, [[], []]
         self.f = [a, b]
         self.W, self.H = width, height
         self.ground = ground or int(height * 0.78)
@@ -1861,11 +3173,19 @@ class Fight:
         self._acts[self._i(who)].append(dict(t0=at, t1=at + dur, move="block", prio=1, shift=0.0))
         self._touch(at + dur)
 
-    def dodge(self, who, at, back=34.0):
+    def dodge(self, who, at, back=34.0, style=None):
+        """Avoid a blow. style None = lean back, 'flip' = a backflip (a big, flashy dodge: it needs about 0.8 s)."""
         i = self._i(who)
+        if style == "flip":
+            self._act(i, "backflip", at, 1)
+            self._disp.append(dict(i=i, t0=at + 0.08, dur=0.5, rel=True, by=-max(back, 40.0) * 2.4, ease="out_quad"))
+            self._sounds.append((at + 0.12, sfx.whoosh(0.35, 0.5, variant=int(at * 10), rise=True), 0.6, 0.0))
+            self._sounds.append((at + 0.66, sfx.land(0.7, variant=int(at * 10)), 0.5, 0.0))
+            return
         self._act(i, "dodge", at, 1)
         self._disp.append(dict(i=i, t0=at + 0.04, dur=0.22, by=-back, away=True, ease="out_quad"))
         self._disp.append(dict(i=i, t0=at + 0.34, dur=0.2, by=back * 0.8, away=True, ease="in_out_sine"))
+        self._sounds.append((at + 0.03, sfx.cloth(0.2, 0.3, variant=int(at * 10)), 0.6, 0.0))
 
     def duck(self, who, at):
         self._act(self._i(who), "duck", at, 1)
@@ -1878,6 +3198,14 @@ class Fight:
 
     def jump(self, who, at):
         self._act(self._i(who), "jump", at, 1)
+        self._sounds.append((at + 0.12, sfx.jump(0.4, variant=int(at * 10)), 0.6, 0.0))
+        self._sounds.append((at + 0.62, sfx.land(0.6, variant=int(at * 10)), 0.5, 0.0))
+
+    def step(self, who, at, by=60.0, dur=0.3):
+        """A short step: by > 0 toward the opponent, by < 0 away from them (footwork, retreating, pressing forward)."""
+        i = self._i(who)
+        self._disp.append(dict(i=i, t0=at, dur=dur, rel=True, by=float(by), ease="in_out_sine"))
+        self._touch(at + dur)
 
     def victory(self, who, at):
         self._act(self._i(who), "victory", at, 1, hold=True)
@@ -1905,68 +3233,155 @@ class Fight:
     def sound(self, at, snd, vol=1.0, pan=0.0):
         self._sounds.append((at, snd, vol, pan))
 
+    def use_sounds(self, **files):
+        """Real recordings instead of the synthesised hits: f.use_sounds(punch=["sounds/p1.wav", "sounds/p2.wav"], kick="sounds/k.wav", whoosh=[...]).
+        Keys: punch hit kick block whoosh step ko thud. Each value is a file path, a buffer, or a list of them (used in turn)."""
+        for k, v in files.items():
+            self.sound_files[k] = list(v) if isinstance(v, (list, tuple)) else [v]
+        self._packs = {}
+        self._compiled = False
+        return self
+
+    def use_internet_sounds(self, max_seconds=1.6):
+        """Look for free real sound effects on the internet (CC0 / CC-BY, cached in the sounds folder) for punches, hits, kicks, blocks, whooshes and
+        footsteps. Without a connection the synthesised effects stay. Credits are written to sounds/CREDITS.txt."""
+        for name, q in (("punch", "punch impact"), ("hit", "body hit"), ("kick", "kick impact"), ("block", "block clang"), ("whoosh", "whoosh swing"), ("step", "footstep")):
+            self.sound_files[name] = [sfx.net(q, n=3, pick=j, max_seconds=max_seconds) for j in range(3)]
+        self._packs = {}
+        self._compiled = False
+        return self
+
+    def _pack(self, name):
+        if name not in self.sound_files:
+            return None
+        if name not in self._packs:
+            self._packs[name] = [load_sound(x) if isinstance(x, str) else x for x in self.sound_files[name]]
+        return self._packs[name]
+
     # ---- the director ----
-    def auto(self, duration=14.0, winner="a", seed=1, intro=True, finisher=None):
-        """Write a complete fight: walk-in, exchanges (combos, blocks, dodges and counters), a finishing blow, K.O. in slow motion, a winner banner.
-        The winner lands more and bigger hits; the loser's health reaches zero exactly on the finishing blow."""
+    def auto(self, duration=14.0, winner="a", seed=1, intro=True, finisher=None, pace=1.0):
+        """Write a complete fight: walk-in, exchanges (combos, flurries, trades of blows, blocks, dodges, backflips and counters), a finishing blow,
+        K.O. in slow motion, a winner banner. The winner lands more and bigger hits; the loser's health reaches zero exactly on the finishing blow.
+        pace: 1.0 normal, 1.5 frantic, 0.7 slow and tense. Another seed gives another fight."""
         rnd = random.Random(seed)
         w = self._i(winner)
         l = 1 - w
-        wn, ln = self.f[w].name, self.f[l].name
+        wn = self.f[w].name
         self.winner = w
-        t = 0.0
+        pace = clamp(float(pace), 0.5, 2.0)
         if intro:
             self.text(0.3, "READY?", 0.9, 110, "#ffffff", "pop")
             self.text(1.5, "FIGHT!", 0.9, 170, "#ffd166", "slam")
             self.sound(1.5, sfx.bell(660, 1.0, 0.4), 0.8)
-            self.gap(0.9, 86.0, 1.5)
-            t = 2.5
+            self.sound(1.5, sfx.cymbal(1.3, 0.3, variant=1), 0.5)
+            self.gap(0.9, 90.0, 1.5)
+            t = 2.4
         else:
-            self.gap(0.0, 86.0, 0.3)
+            self.gap(0.0, 90.0, 0.3)
             t = 0.5
-        ko_t = max(t + 1.5, duration - 3.6)
-        combos = [["jab", "cross"], ["jab", "jab", "cross"], ["front_kick"], ["jab", "cross", "round_kick"], ["sweep", "uppercut"], ["cross", "front_kick"],
-                  ["jab", "front_kick"], ["round_kick"], ["uppercut"], ["jab", "cross", "uppercut"]]
+        ko_t = max(t + 2.2, duration - 3.4)
+        light = [["jab", "cross"], ["jab", "jab", "cross"], ["jab", "cross", "hook"], ["hook", "cross"], ["jab", "elbow"], ["cross", "knee"], ["jab", "hook", "cross"]]
+        heavy = [["round_kick"], ["front_kick", "cross"], ["jab", "cross", "uppercut"], ["sweep", "uppercut"], ["axe_kick"], ["jab", "front_kick", "round_kick"],
+                 ["hook", "uppercut"], ["knee", "elbow", "hook"], ["superman_punch"], ["cross", "round_kick"]]
         won, lost = [], []
-        guard = 0
-        while t < ko_t - 1.7 and guard < 40:
+        stun = [0.0, 0.0]                         # until when each fighter is busy reacting to a hit
+        momentum = 0.64
+        guard, recent = 0, []
+
+        def note(rec, victim):
+            stun[victim] = max(stun[victim], rec["t0"] + MOVES[rec["move"]].hit + 0.55)
+        while t < ko_t - 0.9 and guard < 90:
             guard += 1
-            atk = w if rnd.random() < 0.62 else l
+            atk = w if rnd.random() < momentum else l
             dfd = 1 - atk
-            chain = rnd.choice(combos)
+            if atk == w:
+                kinds, wts = ["land", "block", "dodge", "trade", "flurry"], [5.0, 2.2, 1.7, 1.2, 1.8]
+            else:
+                kinds, wts = ["land", "block", "dodge", "trade", "flurry"], [1.3, 3.0, 3.0, 0.8, 0.4]
+            if len(won) + len(lost) == 0:
+                kinds, wts = ["land", "flurry"], [3.0, 1.0]                  # open with a clean exchange
+            kind = rnd.choices(kinds, wts)[0]
+            if len(recent) >= 2 and recent[-1] == recent[-2] == kind:
+                kind = "land" if kind != "land" else "block"
+            recent.append(kind)
+            t = max(t, stun[atk] + 0.05, stun[dfd] * (0.6 if kind == "trade" else 0.0))
+            chain = list(rnd.choice(light if rnd.random() < 0.55 else heavy))
             if atk == l:
                 chain = chain[:rnd.choice((1, 2))]
-            plan = rnd.choices(["land", "block", "dodge"], [5, 2, 1.6] if atk == w else [1.4, 3, 3])[0]
-            tt = t
-            first_impact = None
-            for k, mv in enumerate(chain):
-                m = MOVES[mv]
-                ok = plan == "land" or (k > 0 and plan == "block") or (k > 0 and plan == "dodge")
-                if k == 0 and plan == "dodge":
-                    rec = self.attack(atk, mv, tt, hit=False)
-                    self.dodge(dfd, tt + m.hit - 0.28)
-                    counter = rnd.choice(["jab", "cross", "front_kick"])
-                    rec2 = self.attack(dfd, counter, tt + m.hit + 0.25, hit=True)
-                    (won if dfd == w else lost).append(rec2)
-                    tt = tt + m.hit + 0.25 + MOVES[counter].dur
+            if kind == "flurry":
+                chain = [rnd.choice(["jab", "cross", "hook", "jab", "elbow", "knee"]) for _ in range(rnd.randint(4, 6 if atk == w else 4))]
+            sp = 0.62 if kind == "flurry" else 0.78
+
+            def est(ch):
+                return sum(MOVES[x].dur * sp for x in ch[:-1]) + MOVES[ch[-1]].dur + (0.6 if ch[0] == "superman_punch" else 0.0)
+            avail = ko_t - 0.7 - t
+            while len(chain) > 1 and est(chain) > avail:
+                chain.pop()
+            if kind in ("dodge", "trade") and est(chain) + 1.1 > avail:
+                kind = "land"
+            if est(chain) > avail:
+                chain = [x for x in chain if x != "superman_punch"][:1] or ["jab"]
+                if est(chain) > avail:
                     break
-                rec = self.attack(atk, mv, tt, hit=True)
-                if k == 0 and plan == "block":
-                    self.block(dfd, tt + m.hit - 0.3, 0.7)
-                    rec["blocked_plan"] = True
-                if not (k == 0 and plan == "block"):
+            if chain[0] == "superman_punch":
+                self.gap(t, 178.0, 0.45)
+                t += 0.6
+            tt = t
+            if kind == "dodge":
+                m0 = MOVES[chain[0]]
+                self.attack(atk, chain[0], tt, hit=False)
+                flip = rnd.random() < 0.3 and chain[0] != "superman_punch"
+                self.dodge(dfd, tt + m0.hit - (0.5 if flip else 0.3), style="flip" if flip else None)
+                counter = rnd.choice(["jab", "cross", "front_kick", "hook", "knee"])
+                c_t = tt + m0.hit + (0.4 if flip else 0.22)
+                rec2 = self.attack(dfd, counter, c_t, hit=True)
+                (won if dfd == w else lost).append(rec2)
+                note(rec2, atk)
+                tt = c_t + MOVES[counter].dur
+            elif kind == "block":
+                m0 = MOVES[chain[0]]
+                rec = self.attack(atk, chain[0], tt, hit=True)
+                rec["blocked_plan"] = True
+                self.block(dfd, tt + m0.hit - 0.3, 0.7)
+                tt += m0.dur * sp
+                for mv in chain[1:]:
+                    rec = self.attack(atk, mv, tt, hit=True)
                     (won if atk == w else lost).append(rec)
-                tt += m.dur * (0.78 if k < len(chain) - 1 else 1.0)
-            t = tt + rnd.uniform(0.15, 0.4)
-            self.gap(tt - 0.05, 86.0, 0.38)
-            if rnd.random() < 0.25 and t < ko_t - 2.5:
+                    note(rec, dfd)
+                    tt += MOVES[mv].dur * sp
+                tt = max(tt, t + m0.dur)
+            elif kind == "trade":
+                ma, mb = chain[0], rnd.choice(["jab", "cross", "hook", "front_kick"])
+                da, db = MOVES[ma].hit, MOVES[mb].hit
+                ta = t + max(0.0, db - da)
+                tb = ta + da - db + rnd.uniform(-0.015, 0.015)
+                ra, rb = self.attack(atk, ma, ta, hit=True), self.attack(dfd, mb, tb, hit=True)
+                (won if atk == w else lost).append(ra)
+                (won if dfd == w else lost).append(rb)
+                note(ra, dfd)
+                note(rb, atk)
+                tt = max(ta + MOVES[ma].dur, tb + MOVES[mb].dur)
+            else:
+                for k, mv in enumerate(chain):
+                    rec = self.attack(atk, mv, tt, hit=True)
+                    (won if atk == w else lost).append(rec)
+                    note(rec, dfd)
+                    tt += MOVES[mv].dur * (sp if k < len(chain) - 1 else 1.0)
+            ko_t = max(ko_t, tt + 0.8)
+            t = tt + rnd.uniform(0.1, 0.34) / pace
+            self.gap(tt - 0.05, rnd.uniform(82.0, 100.0), 0.34)
+            if rnd.random() < 0.16 and t < ko_t - 2.6:
                 mover = rnd.choice((0, 1))
-                self.taunt(mover, t) if rnd.random() < 0.5 else self.jump(mover, t)
+                if rnd.random() < 0.5:
+                    self.taunt(mover, t)
+                else:
+                    self.jump(mover, t)
                 t += 0.9
-        fm = finisher or rnd.choice(["round_kick", "uppercut", "flying_kick", "cross"])
+        fm = finisher or rnd.choice(["round_kick", "uppercut", "flying_kick", "cross", "axe_kick", "superman_punch"])
         fk = MOVES[fm]
-        if fm == "flying_kick":
-            self.gap(ko_t - 1.2, 150.0, 0.6)
+        t = max(t, stun[w] + 0.05)
+        if fm in ("flying_kick", "superman_punch"):
+            self.gap(ko_t - 1.2, 150.0 if fm == "flying_kick" else 178.0, 0.6)
         else:
             self.gap(ko_t - 0.7, 86.0, 0.5)
         frec = self.attack(w, fm, ko_t, hit=True, finisher=True)
@@ -1974,6 +3389,7 @@ class Fight:
         self.text(ko_t + fk.hit + 0.15, "K.O.", 1.5, 220, "#ff5252", "slam")
         self.text(ko_t + 2.3, "%s WINS!" % wn, 1.2, 100, "#ffd166", "pop", y=self.H * 0.3)
         self.t_end = max(self.t_end, duration)
+
         # balance the health bars: the winner takes some damage, the loser ends on exactly zero with the finishing blow
         def scale(recs, total):
             base = sum(r["dmg"] for r in recs if not r.get("blocked_plan"))
@@ -2021,7 +3437,7 @@ class Fight:
                 st = self._active(tgt, ts)
                 if st and st["move"] in ("block", "duck") and st["prio"] == 1 and not rec["finisher"]:
                     rec["result"] = "blocked"
-                elif st and st["move"] == "dodge":
+                elif st and st["move"] in ("dodge", "backflip"):
                     rec["result"] = "miss"
                 else:
                     rec["result"] = "hit"
@@ -2034,8 +3450,10 @@ class Fight:
                     self._acts[tgt].append(dict(t0=ts, t1=float("inf"), move="launch" if m.launch else "knockdown", prio=3, shift=0.0))
                 else:
                     kind = {"head": "hit_head", "body": "hit_body", "legs": "stagger"}[m.kind]
+                    if rec["dmg"] >= 10.5 and m.kind != "legs":
+                        kind = "knockback"                                  # a hard hit throws the opponent back
                     self._acts[tgt].append(dict(t0=ts, t1=ts + MOVES[kind].dur, move=kind, prio=3, shift=0.0))
-                self._disp.append(dict(i=tgt, t0=ts, dur=0.28, by=m.knock * (1.7 if rec["finisher"] else 1.0), away=True, ease="out_quad"))
+                self._disp.append(dict(i=tgt, t0=ts, dur=0.3, by=m.knock * (1.7 if rec["finisher"] else 1.25 if rec["dmg"] >= 10.5 else 1.0), away=True, ease="out_quad"))
             elif rec["result"] == "blocked":
                 self._acts[tgt].append(dict(t0=ts, t1=ts + 0.4, move="blocked", prio=3, shift=0.0))
                 self._disp.append(dict(i=tgt, t0=ts, dur=0.2, by=m.knock * 0.35, away=True, ease="out_quad"))
@@ -2067,6 +3485,8 @@ class Fight:
             toward = 1.0 if cur[1 - i] >= cur[i] else -1.0
             if d.get("to") is not None:
                 target = d["to"]
+            elif d.get("rel"):                                           # relative to the opponent: by > 0 toward, by < 0 away
+                target = cur[i] + d["by"] * toward
             elif d.get("by") is not None:
                 target = cur[i] + d["by"] * (-toward if d.get("away") and d["by"] > 0 else toward if d.get("away") else 1.0)
                 if d.get("away") and d["by"] < 0:                       # negative 'by' with away = step back (away from the opponent)
@@ -2088,21 +3508,49 @@ class Fight:
             if abs(xb - xa) > 14:
                 cur = [1.0, -1.0] if xb > xa else [-1.0, 1.0]
             self._face[0][k], self._face[1][k] = cur
+        self._build_tracks()
         # 4. effects, health, sounds
         self._fx, self._shakes, self._hp, self._popups = [], [], [[], []], []
-        cache = {}
+        self._flashes = [[], []]
+        self._packs = {}
+        counts, cache = {}, {}
+        surface = self.surface or {"dojo": "wood", "arena": "wood", "city_night": "concrete", "sunset": "dirt", "forest": "grass", "plain": "concrete"}.get(getattr(self.stage, "kind", "plain"), "wood")
+        deeper = [1.0, 0.86]                                          # the second fighter's voice is a little deeper
 
-        def snd(name, power=1.0):
-            key = (name, round(power, 1))
+        def snd(name, power=1.0, who=None):
+            """The next take of an effect: five different takes per effect in turn (or the next recorded sound when use_sounds was called)."""
+            k = counts.get(name, 0)
+            counts[name] = k + 1
+            pk = self._pack(name)
+            if pk:
+                return pk[k % len(pk)]
+            slot = k % 5
+            key = (name, round(power, 1), slot, who)
             if key not in cache:
-                cache[key] = getattr(sfx, name)(power) if name in ("punch", "hit", "kick") else getattr(sfx, name)()
+                if name in ("punch", "hit", "kick", "smash", "slap", "thud", "crack", "block", "fall", "land"):
+                    buf = getattr(sfx, name)(power, variant=slot)
+                elif name == "whoosh":
+                    buf = sfx.whoosh(0.18 + 0.04 * (slot % 3), 0.5, variant=slot)
+                elif name == "step":
+                    buf = sfx.step(0.5, surface, variant=slot)
+                elif name in ("ko", "slide", "cloth", "kiai", "grunt", "pain", "gasp"):
+                    buf = getattr(sfx, name)(variant=slot)
+                    if who is not None and name in ("kiai", "grunt", "pain", "gasp"):
+                        buf = _pitch(buf, deeper[who])
+                else:
+                    buf = getattr(sfx, name)()
+                cache[key] = buf
             return cache[key]
         for rec in events:
             m = MOVES[rec["move"]]
             ts, att, tgt = rec["ts"], rec["i"], 1 - rec["i"]
             if rec["result"] == "none":
                 continue
-            self._sounds.append((rec["t0"] + max(0.0, m.hit - 0.1), sfx.whoosh(0.22, 0.45), 0.7, 0.0))
+            rr = random.Random(self.seed * 7919 + int(ts * 100) + att)
+            pan = -0.25 if att == 0 else 0.25
+            self._sounds.append((rec["t0"] + max(0.0, m.hit - 0.1), snd("whoosh"), 0.7, pan))
+            if self.voices and m.dmg >= 8 and rr.random() < 0.6:
+                self._sounds.append((rec["t0"] + max(0.0, m.hit - 0.14), snd("kiai" if m.dmg >= 11 else "grunt", 1.0, att), 0.5, pan))
             if rec["result"] == "miss":
                 continue
             pa = self._pose(att, ts)
@@ -2119,6 +3567,16 @@ class Fight:
                         self._hp[tgt].append((ts, left))
                 self._shakes.append((ts, min(18.0, 3.0 + rec["dmg"] * 0.55) * (1.5 if rec["finisher"] else 1.0)))
                 self._sounds.append((ts, snd(m.snd, 0.7 + rec["dmg"] / 22.0), 0.95, 0.0))
+                if heavy:
+                    self._sounds.append((ts, snd("thud", 0.8), 0.45, 0.0))
+                elif rr.random() < 0.4:
+                    self._sounds.append((ts + 0.005, snd("slap", 0.7), 0.3, 0.0))
+                if self.voices and rr.random() < 0.65:
+                    self._sounds.append((ts + 0.03, snd("pain" if heavy else "grunt", 1.0, tgt), 0.5, -pan))
+                self._flashes[tgt].append(ts)
+                if heavy and not rec["finisher"]:
+                    self._zooms.append((ts - 0.02, 0.5, 0.05 + min(0.06, rec["dmg"] * 0.003)))
+                    self._fx.append(dict(kind="dust", s=ts + 0.1, x=self._x_at(tgt, ts + 0.1), y=self.ground, k=0.6))
                 hold = 0.05 + min(0.08, rec["dmg"] * 0.004)
                 if rec["finisher"]:
                     hold = 0.16
@@ -2126,15 +3584,18 @@ class Fight:
                     self._zooms.append((ts, 1.6, 0.3))
                     self._fx.append(dict(kind="ring", s=ts, x=hx, y=hy))
                     self._sounds.append((ts + 0.04, snd("ko"), 0.9, 0.0))
+                    self._sounds.append((ts, snd("smash", 1.2), 0.7, 0.0))
+                    self._sounds.append((ts + 0.45, snd("fall", 1.0), 0.7, 0.0))
                     self._fx.append(dict(kind="flash", s=ts))
                     self._fx.append(dict(kind="dust", s=ts + 0.4, x=self._x_at(tgt, ts + 0.4), y=self.ground))
                     if getattr(self.stage, "kind", "") == "arena":
-                        self._sounds.append((ts + 0.5, sfx.crowd(2.6, 0.35), 0.8, 0.0))
+                        self._sounds.append((ts + 0.5, sfx.cheer(2.8, 0.45, variant=1), 0.8, 0.0))
+                        self._sounds.append((ts + 1.2, sfx.applause(2.2, 0.3, variant=1), 0.7, 0.0))
                 self._warps.append(("freeze", ts, hold, 0))
             else:
                 self._fx.append(dict(kind="block", s=ts, x=hx, y=hy, dir=self._facing(att, ts)))
-                self._sounds.append((ts, snd("punch", 0.4), 0.7, 0.0))
-                self._sounds.append((ts, sfx.click(), 0.9, 0.0))
+                self._sounds.append((ts, snd("block", 0.9), 0.8, 0.0))
+                self._sounds.append((ts, snd("thud", 0.4), 0.3, 0.0))
                 self._hp[tgt].append((ts, rec["dmg"] * 0.12))
                 self._shakes.append((ts, 2.5))
                 self._warps.append(("freeze", ts, 0.03, 0))
@@ -2144,7 +3605,7 @@ class Fight:
                 if t0 > -1e8 and abs(b - a) > 20 and (t1 - t0) > 0.25:
                     st = t0 + 0.1
                     while st < t1 - 0.05:
-                        self._sounds.append((st, sfx.step(0.5), 0.35, -0.25 if i == 0 else 0.25))
+                        self._sounds.append((st, snd("step"), 0.35, -0.25 if i == 0 else 0.25))
                         st += 0.3 if abs(b - a) / (t1 - t0) < 260 else 0.2
         self._warp = _Warp(self._warps, self.t_end)
         self._events = events
@@ -2161,15 +3622,15 @@ class Fight:
             return MOVES[a["move"]].offset(s - a["t0"]) * self._facing(i, s)
         return 0.0
 
-    def _pose(self, i, s):
-        """(resolved pose, name of what it is doing)."""
+    _TRACK_HZ = 120.0
+
+    def _pose_raw(self, i, s):
+        """(resolved pose, name of what it is doing) straight from the script, before the transitions are blended in."""
         a = self._active(i, s)
         if a:
-            if self._ko and self._ko[0] == i and s >= self._ko[1] and a["move"] in ("knockdown", "launch"):
-                pass
             return MOVES[a["move"]].pose_at(s - a["t0"]), a["move"]
         if self._ko and self._ko[0] == i and s >= self._ko[1]:
-            return POSES["lying"] and resolve_pose("lying"), "lying"
+            return resolve_pose("lying"), "lying"
         x1, x0 = self._x_at(i, s + 0.03), self._x_at(i, s - 0.03)
         vel = (x1 - x0) / 0.06
         if abs(vel) > 14:
@@ -2179,13 +3640,92 @@ class Fight:
             phase = self._x_at(i, s) * sgn / (84.0 if run else 56.0)
             pose = _walk_pose(phase if fwd else -phase, run)
             return pose, "run" if run else "walk"
-        b = math.sin(s * 3.2 + i)
+        b = math.sin(s * 5.0 + i * 1.9)                                 # fighting stance: a light bounce on the feet
+        b2 = math.sin(s * 2.5 + i)
         p = dict(POSES["guard"])
-        p["lean"] += b * 1.5
-        p["rua"] += b * 2.5
-        p["lua"] -= b * 2.0
-        p["y"] = resolve_pose(p)["y"] + b * 1.2
+        p["lean"] += b2 * 2.0 + 1.0
+        p["rua"] += b * 3.0
+        p["rfa"] -= b * 3.0
+        p["lua"] -= b * 2.5
+        p["head"] = b2 * 1.5
+        p["rth"] += b * 2.5
+        p["lth"] -= b * 2.0
+        p["y"] = resolve_pose(p)["y"] + b * 1.6
         return p, "idle"
+
+    def _blend_time(self, kind, what):
+        if kind == "act":
+            if what in ("hit_head", "hit_body", "stagger", "blocked", "knockback", "launch", "knockdown"):
+                return 0.05                                               # reactions stay snappy
+            if what in MOVES and MOVES[what].hit:
+                return 0.075
+            return 0.09
+        return 0.15                                                       # walking starts and stops
+
+    def _build_tracks(self):
+        """Sample both fighters at 120 Hz and blend every change of action (idle to attack, attack to idle, hit, walk ...) from the pose the body
+        really had, so the figure never snaps from one pose to another. This is what makes the movement smooth."""
+        hz = self._TRACK_HZ
+        n = int((self.t_end + 8.0) * hz) + 2
+        self._tracks, self._labels = [[], []], [[], []]
+        for i in (0, 1):
+            tr, lb = [], []
+            seg, seg_t0, anchor, B, prev = None, 0.0, None, 0.1, None
+            for k in range(n):
+                s = k / hz
+                raw, what = self._pose_raw(i, s)
+                act = self._active(i, s)
+                key = ("act", id(act)) if act else ("loco", what)
+                if key != seg:
+                    seg, seg_t0 = key, s
+                    anchor, B = (prev, self._blend_time(key[0], what)) if prev is not None else (None, 0.0)
+                if anchor is not None and s - seg_t0 < B:
+                    pose = blend_pose(anchor, raw, (s - seg_t0) / B, "in_out_sine")
+                else:
+                    pose, anchor = raw, None
+                tr.append(pose)
+                lb.append(what)
+                prev = pose
+            self._tracks[i], self._labels[i] = tr, lb
+
+    def _pose(self, i, s):
+        """(resolved pose, name of what it is doing) at fight time s, smoothed."""
+        tr = self._tracks[i] if self._tracks else None
+        if tr is None:
+            return self._pose_raw(i, s)
+        f = s * self._TRACK_HZ
+        k = int(f) if f > 0 else 0
+        if f <= 0:
+            return tr[0], self._labels[i][0]
+        if k >= len(tr) - 1:
+            return tr[-1], self._labels[i][-1]
+        u = f - k
+        a, b = tr[k], tr[k + 1]
+        return {key: a[key] + (b[key] - a[key]) * u for key in a}, self._labels[i][k]
+
+    def _swoosh(self, c, i, s):
+        """A fading streak behind the hand or foot that is striking."""
+        a = self._active(i, s)
+        if a is None or a["move"] not in MOVES or not MOVES[a["move"]].hit:
+            return
+        m = MOVES[a["move"]]
+        local = s - a["t0"]
+        if not (m.hit - 0.17 <= local <= m.hit + 0.07):
+            return
+        pts = []
+        for j in range(8):
+            ss = s - j * 0.012
+            p, _ = self._pose(i, ss)
+            J = self.f[i].joints(self._x_at(i, ss) + self._off(i, ss), self.ground, self._facing(i, ss), p)
+            pts.append(J[m.limb])
+        col = mix("#ffffff", self.f[i].color, 0.25)
+        fade = clamp(1.0 - abs(local - m.hit) / 0.17)
+        for j in range(len(pts) - 1, 0, -1):
+            u = 1.0 - j / 8.0
+            for q in (0.0, 0.5):
+                x = pts[j][0] + (pts[j - 1][0] - pts[j][0]) * q
+                y = pts[j][1] + (pts[j - 1][1] - pts[j][1]) * q
+                c.circle(x, y, 3.0 + 7.0 * u, fill=col, alpha=0.5 * u * fade)
 
     # ---- camera ----
     def _camera(self, v, s):
@@ -2268,12 +3808,20 @@ class Fight:
             fc = self._facing(i, s)
             trail = None
             if self.trails and what in MOVES and MOVES[what].hit:
-                lt = s - MOVES[what].hit
                 a = self._active(i, s)
-                local = s - a["t0"]
-                if abs(local - MOVES[what].hit) < 0.22:
-                    trail = [(MOVES[what].pose_at(max(0.0, local - d)), 0.55 + d * 3) for d in (0.05, 0.1)]
-            self.f[i].draw(c, x, self.ground, fc, pose, v, trail=trail)
+                if a is not None and a["move"] == what:             # the label comes from the smoothed track, the action may just have ended
+                    local = s - a["t0"]
+                    if abs(local - MOVES[what].hit) < 0.22:
+                        trail = [(MOVES[what].pose_at(max(0.0, local - d)), 0.55 + d * 3) for d in (0.05, 0.1)]
+            fl = 0.0
+            for te in self._flashes[i]:
+                e = v - self._warp.vid(te)
+                if 0 <= e < 0.16:
+                    fl = max(fl, 0.8 * (1 - e / 0.16))
+            self.f[i].draw(c, x, self.ground, fc, pose, v, trail=trail, flash=fl)
+        if self.trails:
+            for i in (0, 1):
+                self._swoosh(c, i, s)
         if self.extra is not None:
             self.extra(c, v)
         for fx in self._fx:
@@ -2314,9 +3862,11 @@ class Fight:
             c.circle(fx["x"], fx["y"], 30 + 170 * ease(u, "out_cubic"), outline="#ffffff", width=max(1.0, 10 * (1 - u)))
         elif k == "dust" and e < 0.8:
             u = e / 0.8
+            kk = fx.get("k", 1.0)
             for j in range(7):
                 a = (j - 3) * 0.55
-                c.circle(fx["x"] + math.sin(a) * 90 * u + (j % 2) * 8, fx["y"] - 10 - 40 * u * (0.5 + (j % 3) * 0.25), 16 * (1 - u * 0.6) + 4, fill=mix("#cdbb9d", "#ffffff", 0.2 * (1 - u)))
+                c.circle(fx["x"] + math.sin(a) * 90 * u * kk + (j % 2) * 8, fx["y"] - 10 - 40 * u * kk * (0.5 + (j % 3) * 0.25), (16 * (1 - u * 0.6) + 4) * kk,
+                         fill=mix("#cdbb9d", "#ffffff", 0.2 * (1 - u)), alpha=0.9 * (1 - u * 0.6))
         elif k == "flash" and e < 0.25:
             c.tint("#ffffff", 0.5 * (1 - e / 0.25))
 

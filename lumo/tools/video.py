@@ -1,5 +1,6 @@
 """Video tools: render a Python animation script into a playable MP4 in the workspace, and inspect a video file."""
 
+import importlib.util
 import json
 import os
 import re
@@ -10,7 +11,7 @@ import sys
 
 from lumo.config import APP_DIR
 from lumo.security import ask_outside, fs_path, inside, outside_paths
-from lumo.state import ask, ToolError
+from lumo.state import ask, secret_values, ToolError
 from lumo.tools.registry import B, I, S, tool
 from lumo.tools.shell import run_status_line, shell_run
 from lumo.ui import clip, tw
@@ -51,6 +52,30 @@ def ensure_library(script_dir):
     script_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(str(src), str(dst))
     return True
+
+
+_VK = {}
+
+
+def load_videokit():
+    """The bundled lumovideo module (players, sound search), loaded once. It is a standalone file, so Lumo uses its helpers without copying it anywhere."""
+    if "m" not in _VK:
+        src = VIDEOKIT / LIB
+        if not src.exists():
+            raise ToolError("the animation library is missing from this install (%s). Reinstall or update Lumo Code." % src)
+        spec = importlib.util.spec_from_file_location("lumovideo_kit", str(src))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["lumovideo_kit"] = mod
+        spec.loader.exec_module(mod)
+        _VK["m"] = mod
+    return _VK["m"]
+
+
+def how_to_play(rp):
+    """One short paragraph the model passes on to the user."""
+    q = shlex.quote(rp)
+    return ("termux-open %s  |  in Lumo: /play  |  to see it in Gallery: run termux-setup-storage once (tap Allow), then cp %s ~/storage/movies/ "
+            "and open Gallery, Files, VLC or MX Player" % (q, q))
 
 
 def python_exe():
@@ -193,7 +218,7 @@ def t_render_video(a, ctx):
         if not okk:
             return denied(why)
     copied = ensure_library(sp.parent)
-    env = ["PYTHONDONTWRITEBYTECODE=1", "LUMO_VIDEO_REQUIRE_FFMPEG=1", "PYTHONPATH=%s%s" % (shlex.quote(str(VIDEOKIT)), os.pathsep + shlex.quote(os.environ["PYTHONPATH"]) if os.environ.get("PYTHONPATH") else "")]
+    env = ["PYTHONDONTWRITEBYTECODE=1", "LUMO_VIDEO_REQUIRE_FFMPEG=1", "LUMO_VIDEO_TOOL=1", "LUMO_SOUNDS_DIR=%s" % shlex.quote(str(ctx.ws / "sounds")), "PYTHONPATH=%s%s" % (shlex.quote(str(VIDEOKIT)), os.pathsep + shlex.quote(os.environ["PYTHONPATH"]) if os.environ.get("PYTHONPATH") else "")]
     if outp:
         outp.parent.mkdir(parents=True, exist_ok=True)
         env.append("LUMO_VIDEO_OUT=%s" % shlex.quote(str(outp)))
@@ -217,6 +242,8 @@ def t_render_video(a, ctx):
     qa = rep.get("qa") or {}
     rp = rel(ctx, __import__("pathlib").Path(final)) if inside(final, ctx.ws) else final
     lines = ["OK: video saved to %s · %s · rendered in %ss" % (rp, describe(info) if info else "%ss, %sx%s" % (rep.get("duration"), rep.get("width"), rep.get("height")), rep.get("render_s"))]
+    if rep.get("workers", 1) > 1 or (rep.get("blur") or 1) > 1:
+        lines.append("render: %d CPU cores · motion blur x%d · %s fps" % (rep.get("workers", 1), rep.get("blur", 1), rep.get("fps")))
     lines.append("checks: %s · motion %s · brightness %s%s" % ("no blank frames" if not qa.get("blank_frames") else "%d blank frames" % qa["blank_frames"],
                                                                qa.get("motion"), qa.get("brightness"), " · sound included" if rep.get("audio") else " · no sound"))
     if rep.get("format") == "gif":
@@ -235,8 +262,7 @@ def t_render_video(a, ctx):
                 lines.append("could not open the player automatically")
         else:
             lines.append("no player launcher found; open the file from your gallery or file manager")
-    else:
-        lines.append("play it: termux-open %s (Termux) or open the file from your gallery / file manager" % rp)
+    lines.append("HOW TO PLAY (tell the user this, in their language, in your final answer): " + how_to_play(rp))
     return "\n".join(lines)
 
 
@@ -259,4 +285,59 @@ def t_video_info(a, ctx):
             lines.append("WARNING: some frames are a flat colour (nothing drawn)")
         if qa["frozen"] > 0.5 and (info.get("duration") or 0) > 2:
             lines.append("WARNING: more than half of the sampled frames do not change")
+    return "\n".join(lines)
+
+
+@tool("find_sound", "Search FREE sound effects on the internet (CC0 and CC-BY only) and save a few short WAV takes in sounds/ with a credit file. "
+      "Use only for a video the user asked for, when real recordings would make it better; lumovideo already has over 80 synthesised effects that need no download. "
+      "Then use sfx.file('sounds/<name>.wav') or fight.use_sounds(punch=[...]) in the script.",
+      {"query": S("the sound in 1-4 English words, e.g. 'punch impact', 'zombie growl', 'rifle shot'"),
+       "count": I("takes to save, default 3, max 6"),
+       "max_seconds": I("cut each take to this length in seconds, default 4"),
+       "url": S("optional: a direct https link to an audio file instead of searching")}, ["query"])
+def t_find_sound(a, ctx):
+    q = str(a.get("query") or "").strip()
+    url = str(a.get("url") or "").strip()
+    if not q and not url:
+        raise ToolError("give a query such as 'punch impact'")
+    count = max(1, min(to_int(a.get("count"), 3), 6))
+    secs = max(1, min(to_int(a.get("max_seconds"), 4), 15))
+    if not shutil.which("ffmpeg"):
+        return "ERROR: ffmpeg is not installed, so downloaded sounds cannot be converted. Install: %s. The synthesised effects work without it: sfx.get('punch')." % INSTALL_HINT
+    key = secret_values(ctx).get("FREESOUND_API_KEY", "")
+    okk, why = ask(ctx, "Sound", clip(url or q, tw() - 12), ["Looks up free sound effects (Openverse%s) and saves up to %d short WAV files in sounds/." % (" and Freesound" if key else "", count)])
+    if not okk:
+        return denied(why)
+    vk = load_videokit()
+    folder = str(ctx.ws / "sounds")
+    saved, notes = [], []
+    old_key = os.environ.get("FREESOUND_API_KEY")
+    if key:
+        os.environ["FREESOUND_API_KEY"] = key
+    try:
+        items = [url] if url else vk.find_sounds(q, limit=count, max_seconds=secs)
+        for it in items:
+            try:
+                path = vk.fetch_sound(it, name=q or None, max_seconds=secs, folder=folder)
+                saved.append((path, it))
+            except vk.SoundError as e:
+                notes.append(str(e))
+    except vk.SoundError as e:
+        return ("ERROR: no sound found (%s). Fall back to the synthesised effects: sfx.get('%s'), or try other words (English works best), "
+                "or give a direct https link to a .wav/.mp3 in the url argument." % (e, re.sub(r"[^a-z]+", "_", q.lower()).strip("_") or "hit"))
+    finally:
+        if key:
+            if old_key is None:
+                os.environ.pop("FREESOUND_API_KEY", None)
+            else:
+                os.environ["FREESOUND_API_KEY"] = old_key
+    if not saved:
+        return "ERROR: nothing could be downloaded (%s). Use the synthesised effects instead: sfx.names() lists them." % ("; ".join(notes[:2]) or "unknown error")
+    lines = ["OK: saved %d sound(s) for '%s' in sounds/" % (len(saved), q or url)]
+    for path, it in saved:
+        meta = it if isinstance(it, dict) else {}
+        lines.append("  %s%s" % (rel(ctx, __import__("pathlib").Path(path)), (" · %ss · \"%s\" by %s · %s" % (meta.get("duration"), clip(str(meta.get("title")), 30), meta.get("creator"), meta.get("license"))) if meta else ""))
+    first = rel(ctx, __import__("pathlib").Path(saved[0][0]))
+    lines.append("use it: buf = sfx.file(\"%s\"); v.sound(buf, at=1.2)   |   several takes in turn for a fight: fight.use_sounds(punch=[...paths...])" % first)
+    lines.append("Credits are in sounds/CREDITS.txt. CC-BY sounds must be credited if the video is published: tell the user, and show the credit in the video if they plan to publish it.")
     return "\n".join(lines)
