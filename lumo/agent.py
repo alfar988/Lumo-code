@@ -18,7 +18,7 @@ from lumo.config import (
 )
 from lumo.diagnose import first_error_line, is_failure
 from lumo.knowledge import reflection_message
-from lumo.memory import hist_dir, log_event, save_history
+from lumo.memory import hist_dir, log_event, note_request, save_history
 from lumo.models import (
     candidate_models, est_tokens, guard_context, local_compact, mark_cooldown, note_model,
     out_budget, rotate_now, rotation_enabled,
@@ -695,6 +695,8 @@ def run_turn(ctx, user_text):
         out("  " + dim("◇ skills: " + ", ".join(ctx.active_skills)))
     before, comp_before = snapshot(ctx.ws)
     ctx.messages.append({"role": "user", "content": expand_mentions(ctx, user_text)})
+    if not is_resume_prompt(user_text):
+        note_request(ctx, user_text)
     save_history(ctx, "start")
     try:
         if intent == "build" and need_plan and ctx.cfg.get("plan", True):

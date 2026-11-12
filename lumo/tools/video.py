@@ -233,7 +233,11 @@ def t_render_video(a, ctx):
     m = REPORT_RX.findall(res["text"])
     if res["code"] != 0 or not m:
         tail = "\n".join(text.splitlines()[-25:])
-        return "ERROR: the script did not produce a video (exit %s). Read the last lines, fix the script and render again:\n%s" % (res["code"], tail)
+        hint = ""
+        if re.search(r"unknown |has no attribute|NameError|ImportError|TypeError|AttributeError", tail):
+            hint = ("\nA name or argument is wrong. Do not guess: call video_api with the right topic (moves, poses, actor, show, fight, scene3d, canvas, video, sound, stages, easing, components, recipes) "
+                    "and use exactly the names it lists. If what you need does not exist, say so and build it yourself with the library's building blocks (define_pose, define_move, Canvas drawing).")
+        return "ERROR: the script did not produce a video (exit %s). Read the last lines, fix the script and render again:\n%s%s" % (res["code"], tail, hint)
     rep = json.loads(m[-1])
     final = rep.get("file")
     if not final or not os.path.exists(final):
@@ -341,3 +345,14 @@ def t_find_sound(a, ctx):
     lines.append("use it: buf = sfx.file(\"%s\"); v.sound(buf, at=1.2)   |   several takes in turn for a fight: fight.use_sounds(punch=[...paths...])" % first)
     lines.append("Credits are in sounds/CREDITS.txt. CC-BY sounds must be credited if the video is published: tell the user, and show the credit in the video if they plan to publish it.")
     return "\n".join(lines)
+
+
+@tool("video_api", "Look up the REAL names in the video library (moves, poses, Actor, Show, Fight, Scene3D, Canvas, sound effects, stages, working recipes) "
+      "instead of guessing or reading its source file. Call it with no topic for the list, then with the topic you need BEFORE writing or fixing a video script.",
+      {"topic": S("overview | recipes | moves | poses | actor | show | fight | scene3d | canvas | video | sound | stages | easing | components (empty = list the topics)")}, [])
+def t_video_api(a, ctx):
+    vk = load_videokit()
+    try:
+        return vk.catalog(str(a.get("topic") or "").strip().lower() or None)
+    except ValueError as e:
+        return "ERROR: %s" % e

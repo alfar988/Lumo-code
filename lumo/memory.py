@@ -117,6 +117,58 @@ def save_history(ctx, reason="auto"):
         return False
 
 
+REQUESTS_KEEP = 14
+_SKIP_REQ = ("y", "n", "ya", "yes", "no", "ok", "oke", "okay", "lanjut", "continue", "yes!", "iya")
+
+
+def note_request(ctx, text):
+    """Append what the user asked to history/requests.md: a short index of everything asked in this workspace. It is never compacted, so Lumo still knows
+    the earlier topics after a restart, after /compact and after a model switch. Never raises."""
+    try:
+        t = " ".join(str(text).split())
+        if not t or t.lower() in _SKIP_REQ or t.lower().startswith("continue the previous work"):
+            return
+        d = hist_dir(ctx)
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / "requests.md"
+        fresh = not p.exists()
+        with open(str(p), "a", encoding="utf-8") as f:
+            if fresh:
+                f.write("# What the user asked in this workspace (newest last)\n\n")
+            f.write("- [%s] %s\n" % (time.strftime("%Y-%m-%d %H:%M"), t[:220]))
+    except Exception:
+        pass
+
+
+def requests_lines(ctx, n=REQUESTS_KEEP):
+    try:
+        lines = [x for x in (hist_dir(ctx) / "requests.md").read_text(encoding="utf-8").splitlines() if x.startswith("- [")]
+    except Exception:
+        return []
+    return lines[-n:]
+
+
+def earlier_requests_block(ctx):
+    """The system-prompt block that gives the model its long-term memory of this workspace (empty when nothing was asked before)."""
+    lines = requests_lines(ctx)
+    if not lines:
+        return ""
+    return ("## Earlier conversations in this workspace (kept across restarts)\n" + "\n".join(lines)[:2400] +
+            "\nThe full conversation is in history/transcript.md and history/archive/. When the user refers to something you do not see in this chat, "
+            "search those files (search / read_file) before you say that you do not remember.")
+
+
+def auto_restore(ctx):
+    """After a restart: bring back the last conversation of this workspace (messages, plan, todos) as it was, without the 'interrupted work' handoff framing.
+    Returns the saved state, or None when there is nothing to restore."""
+    d = load_history(ctx)
+    if not d:
+        return None
+    ctx.handoff = False
+    ctx.plan_active = bool(ctx.plan and any(t.get("status") != "completed" for t in (ctx.todos or [])))
+    return d
+
+
 def peek_history(ctx):
     try:
         return json.loads((hist_dir(ctx) / "state.json").read_text(encoding="utf-8"))

@@ -585,8 +585,8 @@ class TestDocsAndSkill(unittest.TestCase):
             self.assertIn(needed, readme)
         self.assertIn("## [1.9.0]", (ROOT / "CHANGELOG.md").read_text())
         from lumo.config import VERSION
-        self.assertEqual(VERSION, "1.9.0")
-        self.assertEqual(lv.__version__, "1.1.0")
+        self.assertEqual(VERSION, "1.10.0")
+        self.assertEqual(lv.__version__, "1.2.0")
 
 
 if __name__ == "__main__":

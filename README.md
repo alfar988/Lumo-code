@@ -9,8 +9,8 @@ It was built to run well in Termux on a phone (narrow output, no heavy dependenc
 ## What it does
 
 - **Builds things end to end:** games (2D canvas and 3D Three.js), websites, web apps, APIs, bots, scripts.
-- **Starts from tested templates** instead of improvising an engine: twenty-seven starters (2D, 3D, puzzle, snake, breakout, runner, flappy, pong, space shooter, asteroids, falling blocks, memory, racing, platformer and tower-defense games; stickman fight, explainer and kinetic-text videos; landing page, app shell, dashboard, documentation site, Python and Node JSON APIs, command-line tool, Telegram bot, scraper). The code starters carry a self test.
-- **Makes 2D videos with Python:** "a stickman fight", an explainer, kinetic text, a chart or a slideshow. The agent picks `video-skill`, writes an animation script with the bundled `lumovideo` library and turns it into a playable MP4 (with synthesised sound) in your workspace. It makes no video unless you ask for one.
+- **Starts from tested templates** instead of improvising an engine: thirty-one starters (2D, 3D, puzzle, snake, breakout, runner, flappy, pong, space shooter, asteroids, falling blocks, memory, racing, platformer and tower-defense games; stickman fight, 3D fight, soldiers-vs-zombies, story, 3D scene, explainer and kinetic-text videos; landing page, app shell, dashboard, documentation site, Python and Node JSON APIs, command-line tool, Telegram bot, scraper). The code starters carry a self test.
+- **Makes any video with Python, 2D or 3D:** a stickman fight, soldiers against zombies, a story, an explainer, a promo, a tutorial, kinetic text, a chart, a slideshow, a 3D scene. The agent picks `video-skill`, writes an animation script with the bundled `lumovideo` library (templates are only starting points) and turns it into a playable MP4 with sound in your workspace. It can invent its own poses, moves and attacks, and it looks names up with the `video_api` tool instead of guessing them. It makes no video unless you ask for one.
 - **Researches the web:** searches through several providers with automatic fallback (web, news, code, Q&A, docs, packages, papers), reads pages in parallel, cites sources and looks up exact package versions. There is no cap on the number of searches.
 - **Learns from its work:** after it fixes a non-obvious error it can save a lesson, applies relevant lessons in later sessions, and can write a new skill for a procedure it expects to repeat (it asks first). You can review and delete everything with `/lessons`.
 - **Checks its own work:** syntax, undefined functions and variables, broken HTML, and a static UI review (responsive layout, accessibility, WCAG color contrast, generic "AI look") before it says it is done.
@@ -106,6 +106,8 @@ The key can also come from the `OPENROUTER_API_KEY` environment variable. `LUMO_
 | `/lessons` | show, add or delete what Lumo learned; `/lessons off` stops learning |
 | `/templates` | list the ready-made starters |
 | `/resume` | continue unfinished work (progress is saved after every step) |
+| `/remember [on\|off]` | keep the conversation after a restart (on by default; `/clear` starts a new topic) |
+| `/play [video] [--gallery]` | watch the newest video, or copy it to your phone's Movies folder |
 | `/undo`, `/trash` | revert the last change, restore deleted files |
 | `/status` | model, permissions, usage today |
 | `/compact` | move the older part of a long conversation to `history/archive/` and keep the newest 15 messages, so each request carries fewer tokens. No model request is used. `/compact summary` has the model write a summary instead |
@@ -119,6 +121,8 @@ Also: `!ls` runs a shell command directly, `@file.py` includes a file in your me
 3. **Build.** It copies the best template with `use_template`, then adapts it to your request (art, rules, sections and content, and nothing you did not ask for). Lumo compares the result with the template and sends the model back when it is still nearly identical, so a recolored starter is not accepted. Large files are written in parts so no single response is cut off. If a model hits its output limit, the complete part is saved and the model is asked for smaller parts.
 4. **Verify.** `verify_files` runs on the files the request created or changed, and `review_ui` on the pages a build request produced. Problems are fed back to the model until they are fixed. Other files in the workspace are left alone. For web pages and games, `node scripts/page_check.js page.html` loads the page in a stub browser at portrait and landscape sizes and reports exceptions and blank canvases (needs Node.js).
 5. **Recover.** Errors trigger diagnosis hints and a debug skill. If a model keeps failing or is rate limited, Lumo switches to another one and carries the plan and progress over.
+
+Lumo remembers: the conversation of a workspace is restored when you start it again (also after it finished normally), every request is indexed in `history/requests.md` (never compacted, part of every prompt), and older chat stays searchable in `history/transcript.md` and `history/archive/`. `/remember off` turns it off.
 
 Each request is handled on its own. The plan and the todo list of earlier work do not carry over to a new request, and the automatic checks never open files the request did not touch. Say `continue` (or use `/resume`) to pick up unfinished work.
 
@@ -148,7 +152,7 @@ In `templates/`, each with a manifest entry (variables such as title and accent 
 | `game-snake`, `game-breakout`, `game-runner`, `game-flappy` | engine-kit games: particles, screen shake, synthesised sound, power-ups, level patterns, duck and jump, tilting flyer |
 | `game-pong`, `game-shooter`, `game-asteroids`, `game-tetris` | AI opponent with rounds, waves and bosses with a touch stick, drift physics with splitting rocks, 7-piece bag with ghost piece and wall kicks |
 | `game-memory`, `game-racing`, `game-platformer`, `game-tower-defense` | card matching with timer, traffic racer with nitro, generated platformer levels with coyote time, towers with upgrades and 15 waves |
-| `video-stickman-fight`, `video-explainer`, `video-kinetic-text` | Python video scripts (lumovideo): automatic or scripted fight, scenes with chart and typewriter text, one punchy line per scene; selftest without ffmpeg |
+| `video-stickman-fight`, `video-3d-fight`, `video-soldier-zombies`, `video-story`, `video-3d-scene`, `video-explainer`, `video-kinetic-text` | Python video scripts (lumovideo): 2D or 3D fight, soldiers against zombie waves with rifles and grenades, a dialogue story, a generic 3D world, scenes with chart and typewriter text, one punchy line per scene; selftest without ffmpeg |
 | `web-landing`, `web-app` | one-page site, app shell with storage |
 | `dashboard` | KPI cards, SVG charts, sortable table, CSV export |
 | `docs-site` | markdown pages, search, table of contents |
@@ -165,7 +169,7 @@ Lumo-code can be run on both Android and desktop devices, both 32-bit and 64-bit
 
 Minimum RAM to run Lumo-code smoothly: 4 GB RAM, 8 GB RAM, 12 GB RAM,
 
-### Videos (2D, Python)
+### Videos (2D and 3D, Python)
 
 Ask for a video in plain words ("make a stickman fight video", "a 20 second explainer about recycling", "vertical kinetic text for Reels"). Lumo loads `video-skill`, writes one script in `videos/` that starts with `from lumovideo import *`, runs the `render_video` tool and reads its checks (blank or frozen frames, motion, brightness) before it reports. The result is an MP4 (H.264 + AAC) that plays in any player. Watch it with `/play` (opens the newest video), `termux-open videos/fight.mp4`, or `/play --gallery`, which also copies it into your phone's Movies folder so Gallery, Files, VLC and MX Player show it (needs `termux-setup-storage` once).
 
@@ -174,6 +178,8 @@ Ask for a video in plain words ("make a stickman fight video", "a 20 second expl
 - Quality `draft` (fast preview), `standard` (854x480, default), `hd`, `fhd`. Your drawing code never changes between them.
 - `video_info` inspects any video file (length, codecs, sound, blank or frozen frames).
 - **Smooth by default (lumovideo 1.1).** 60 fps at `standard` quality, motion blur (automatic for scripts that ask for 30 fps or less), several CPU cores drawing frames at once (up to four; `LUMO_VIDEO_WORKERS=1` turns it off), and a stickman rig whose every pose change is blended from the pose the body really had, so fighters never snap between moves. Fights have 12 attacks (jab, cross, hook, elbow, uppercut, knee, front kick, round kick, axe kick, sweep, flying kick, superman punch), flurries, trades of blows, blocks, dodges and backflips, knock-back, hit flash, dust, speed streaks behind strikes and a camera that punches in on hard hits; `auto(pace=...)` makes them calm or frantic.
+- **Your own moves and any kind of scene (lumovideo 1.2).** `define_pose(name, base, **angles)` and `define_move(name, keys, hit=...)` invent poses, animations and attacks (20 attacks and over 70 poses are built in); they work in `Fight`, in `Actor` (stickmen for any 2D scene: gaits, captions, rifles and pistols that really shoot, zombies, explosions, camera path) and in 3D. `Scene3D` is real 3D (perspective camera, lighting, fog, shadows, shapes, a 3D stick figure that uses the same poses) and `Scene3D.from_fight(fight)` shows a fight in 3D.
+- **No guessing.** The `video_api` tool (or `python lumovideo.py --api moves`) prints the real names and complete example scripts from the live library; every wrong name raises an error with the closest real names.
 - **Over 80 sound effects**, each call a little different: fight, movement (footsteps for wood, dirt, grass, gravel, metal, sand, concrete), voices, crowd, cinematic, nature, interface, machine, cartoon, weapon and creature families (`sfx.names()`). Real recordings: the `find_sound` tool saves free CC0 / CC-BY sounds from the internet (Openverse; Freesound too with a `FREESOUND_API_KEY` secret) into `sounds/` with a `CREDITS.txt`; scripts load them with `sfx.file(...)`, or call `sfx.net("punch impact")`, which caches and falls back to a synthesised effect when offline.
 - No video is made, and no GIF, music or extra file is added, unless you ask for it. If you write "MP3" for a video, Lumo makes an MP4 and says so.
 

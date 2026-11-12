@@ -1,8 +1,8 @@
 ---
 name: video-skill
-description: 2D videos made with Python (stickman fights, explainers, kinetic text, charts, slideshows) rendered to a playable MP4 with sound: brief, storyboard, the bundled lumovideo library, render_video, checks.
+description: ANY video made with Python, 2D or 3D (stories, characters, fights, battles, explainers, promos, tutorials, slideshows, charts, lyrics, trailers, 3D scenes) rendered to a playable MP4 with sound: brief, storyboard, the bundled lumovideo library, video_api, render_video, checks.
 ---
-# Video skill (2D videos with Python → MP4)
+# Video skill (any 2D or 3D video with Python → MP4)
 
 ## Quick rules (read first)
 1. Make a video only when the user asked for one (or for an animation they want to watch). Questions, code help, "video game", an HTML `<video>` tag or a video player page are not video requests. Do not add a video, a GIF, music, an intro, credits or extra scenes that nobody asked for.
@@ -11,6 +11,8 @@ description: 2D videos made with Python (stickman fights, explainers, kinetic te
 4. Do not interrogate the user. Missing details get the defaults below; say the assumptions in one line. Ask one short question only when the subject itself is unknown ("a video of what?").
 5. Read what `render_video` returns (the `checks:` line and every `WARNING:`). Fix the warnings before you say it is done. Finish with the file path, the length, what is in it and how to play it.
 6. Draw everything with the library. Sound: use its synthesised effects (over 80, no download); when the user wants real or more varied sound effects, use `find_sound` (free CC0 / CC-BY recordings, credits in `sounds/CREDITS.txt`). Never download songs, music, lyrics, copyrighted characters or footage, and never use a real person's face or voice.
+8. The library is a toolbox, not a list of templates: ANY video the user describes can be made, whatever the subject (a cooking tutorial, a product promo, a soldier and zombie battle, a love story skit, a 3D city flythrough, a birthday card, a data story, a game trailer). Templates are only starting points for the subjects they name; if none fits, write your own script from the building blocks below. Never say "I can only make fights" and never force a request into the nearest template.
+9. Never invent a name. Before you write or fix a script, call `video_api` for the topic you need (`recipes` has complete working scripts; `moves`, `poses`, `actor`, `show`, `fight`, `scene3d`, `canvas`, `sound`, `stages` list the real names) and use exactly what it returns. Do not read `lumovideo.py` line by line: it costs requests and the tool is exact. If something you need does not exist, say so in one line and build it yourself (`define_pose`, `define_move`, Canvas drawing).
 7. Every request is paid for from a daily allowance on free models: start from a template (`use_template`) and change only the settings, write the script in one `write_file`, render once, fix only real warnings. A finished video should take about four requests, not thirty.
 
 ## Defaults (use them, do not ask)
@@ -26,7 +28,7 @@ description: 2D videos made with Python (stickman fights, explainers, kinetic te
 ## Workflow
 1. **Brief** in your head: subject, length, format, style, sound. One line of assumptions to the user.
 2. **Storyboard** (anything over 10 s): 3-6 beats with times, for example `0-2 s title · 2-9 s fight · 9-12 s K.O. and winner`.
-3. **Script**: write the whole `videos/<name>.py` in one `write_file`. When a template fits, `use_template` it (`video-stickman-fight`, `video-explainer`, `video-kinetic-text`) and change names, colours, stage and length.
+3. **Script**: write the whole `videos/<name>.py` in one `write_file`. When a template fits the subject (`video-stickman-fight`, `video-3d-fight`, `video-soldier-zombies`, `video-story`, `video-3d-scene`, `video-explainer`, `video-kinetic-text`), `use_template` it; when none fits, write the script from the building blocks (`video_api` topic `recipes` has starters) and change names, colours, stage and length.
 4. **Render**: `render_video` with `script`. Use `quality: "draft"` for a first pass of a long or new script, then the final render.
 5. **Check and fix**: no blank frames, some motion, brightness above 6. A WARNING means a real problem: fix the script and render again. Never re-render without a reason.
 6. **Report**: path (for example `videos/fight.mp4`), length, resolution, one sentence on what happens, and HOW TO PLAY it (the render result lists the commands; always pass them on, in the user's language): `termux-open videos/fight.mp4`, or `/play` inside Lumo, or for the Gallery run `termux-setup-storage` once, then `cp videos/fight.mp4 ~/storage/movies/` and open Gallery, Files, VLC or MX Player (`/play --gallery` does the copy).
@@ -35,6 +37,7 @@ If `render_video` says ffmpeg or Pillow is missing, run the install command it p
 
 ## Tools
 - `render_video(script, output?, quality?, open?)`: runs the script, encodes the MP4, probes it and returns the checks. `open: true` starts the device player; use it only when the user wants to watch it right now.
+- `video_api(topic?)`: the exact names and signatures of the library (and complete example scripts). Call it before using a name you have not seen in this chat.
 - `video_info(path)`: length, size, fps, codecs, sound, blank or frozen frames of any video file.
 - `find_sound(query, count?, max_seconds?, url?)`: looks up FREE sound effects on the internet (Openverse; Freesound too when the user stored a `FREESOUND_API_KEY` secret), saves short WAV takes in `sounds/` and writes `sounds/CREDITS.txt`. Use English queries (`punch impact`, `zombie growl`, `rifle shot`). Use it only when real recordings are wanted; the synthesised effects need no download.
 - The user can type `/play` (newest video) or `/play --gallery` (also copies it to the phone's Movies folder).
@@ -87,6 +90,18 @@ Also `walk`, `run`, `step(who, at, by=60)` (footwork: by > 0 toward the opponent
 **Choreography rules**: three acts (setup, exchange, finish). Alternate who attacks, let one fighter dominate, give a block or dodge before a big hit, keep 1-2 seconds between exchanges, finish with the heaviest move. A fight under 8 s feels rushed, over 20 s drags.
 **Your own props or effects**: `f.extra = lambda c, t: ...` draws in world coordinates after the fighters (ground is `f.ground`). Weapons are cosmetic: the same punches and kicks play.
 **In a longer video**: `v.scene(2, title_card)`, then `f.transition = "crossfade"; v.add(f)`. The fight adds its own sound track.
+
+## Building blocks (pick what the video needs)
+| the video has | use |
+|---|---|
+| text, shapes, gradients, images, charts, particles, slideshows, promos, tutorials, lyrics, trailers | `Video` + `v.scene(duration, draw)` with `Canvas` (`video_api canvas`, `components`, `recipes`) |
+| people or creatures that walk, talk, gesture, shoot, fall, in any scene | `Actor` + `Show` (`video_api actor`, `show`); guns, zombies, speech captions, explosions, camera path are built in |
+| your own move, attack or animation | `define_pose(name, base, **angles)` then `define_move(name, keys, hit=...)`; works in `Fight`, `Actor.play`, and `Figure3D.play` |
+| a stickman fight | `Fight` (2D) or `Scene3D.from_fight(fight)` (3D) |
+| real 3D: shapes, a moving camera, 3D figures, fog, shadows | `Scene3D` (`video_api scene3d`); heavy, so `Video(1280, 720, fps=30)` and `quality: draft` first |
+| sound | `v.sfx(name, at)`, `sfx.*`, `sfx.file`, `sfx.net`, `find_sound`, `music.beat` (`video_api sound`) |
+A new move in two lines: `define_pose("hands_up", "guard", rua=165, rfa=175, lua=165, lfa=175)` then `define_move("hooray", [(0, "guard"), (0.25, "hands_up", "out_quad"), (0.9, "hands_up"), (1.2, "guard")])`; play it with `actor.play(2.0, "hooray")`.
+Soldiers against zombies is one `Show` with `Actor(weapon="rifle", look="soldier")` and `Actor(look="zombie", hp=2)`; `soldier.shoot(t, target=zed, burst=3)` fires, hits take hp, at 0 the zombie falls; `show.explode(t, x)` blows things up.
 
 ## Other kinds of video
 - **Title or quote**: gradient `c.background`, `c.text` with `scale=ease(t / 0.5, "out_back")`, a `c.glow` behind it, `fade_out=0.4`.

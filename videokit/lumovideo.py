@@ -16,12 +16,13 @@ internet), Video (scenes, render, checks), Stick/Fight/Stage (stickman character
 (components), play_hints/open_video (how to watch the result).
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import array
 import bisect
 import collections
 import concurrent.futures
+import difflib
 import hashlib
 import inspect
 import ipaddress
@@ -54,6 +55,7 @@ __all__ = [
     "rgb", "mix", "shade", "PALETTES", "font", "Mixer", "sfx", "music", "note_freq", "Stick", "Fight", "Stage", "POSES", "MOVES",
     "Typewriter", "Particles", "BarChart", "Subtitles", "Timeline", "check_requirements", "ffmpeg_path", "find_font", "frame_stats",
     "play_hints", "open_video", "load_sound", "find_sounds", "fetch_sound", "sound_credits", "SOUND_DIR",
+    "define_pose", "define_move", "moves", "poses", "GAITS", "POSE_ANGLES", "Actor", "Show", "Scene3D", "Camera3D", "Figure3D", "catalog",
 ]
 
 
@@ -120,8 +122,38 @@ def ease(t, name="in_out_cubic"):
     """Map progress t (0..1, clamped) through an easing curve: linear, smooth, in_/out_/in_out_ + quad cubic quart quint sine expo circ back elastic, bounce."""
     f = EASINGS.get(name) if isinstance(name, str) else name
     if f is None:
-        raise ValueError("unknown easing %r; choose one of: %s" % (name, ", ".join(sorted(EASINGS))))
+        raise _unknown("easing", name, EASINGS)
     return f(clamp(t))
+
+
+def _suggest(name, options, n=3):
+    return difflib.get_close_matches(str(name), [str(o) for o in options], n, 0.45)
+
+
+def _unknown(kind, name, options, hint=""):
+    """A ValueError for a name that does not exist: says what was wrong, the closest real names and every valid one."""
+    opts = [str(o) for o in options]
+    close = _suggest(name, opts)
+    msg = "unknown %s %r." % (kind, name)
+    if close:
+        msg += " Did you mean: %s?" % ", ".join(close)
+    msg += " Valid %s names: %s." % (kind, ", ".join(sorted(opts)))
+    return ValueError(msg + ((" " + hint) if hint else ""))
+
+
+class _Helpful(object):
+    """Base of the library's classes: a wrong attribute name raises an error that lists the real ones (and the closest match), so nobody has to guess."""
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        if any(name in vars(k) for k in type(self).__mro__):          # a property whose body failed: show the real error, not a made-up one
+            return object.__getattribute__(self, name)
+        cls = type(self).__name__
+        pub = sorted(n for n in dir(type(self)) if not n.startswith("_"))
+        close = _suggest(name, pub)
+        raise AttributeError("%s has no attribute %r.%s %s has: %s. (Look things up with the video_api tool, or: python lumovideo.py --api)" % (
+            cls, name, (" Did you mean: %s?" % ", ".join(close)) if close else "", cls, ", ".join(pub[:70])))
 
 
 def lerp(a, b, t):
@@ -321,7 +353,7 @@ def _cache_put(cache, key, value, limit=8):
     return value
 
 
-class Canvas:
+class Canvas(_Helpful):
     """One frame. Draw with logical coordinates (the Video width x height, 1280x720 by default); the output quality never changes your numbers.
 
     World mode (default): drawing goes through the camera (c.camera(x, y, zoom, shake)). Use `with c.screen():` for things that must not move
@@ -890,7 +922,7 @@ def _fade(buf, fin=0.0, fout=0.0):
     return out
 
 
-class Mixer:
+class Mixer(_Helpful):
     """A stereo mix bus. Add sounds at times (seconds), then save a WAV or hand it to Video (video.sound(...)).
     m = Mixer(10); m.add(sfx.punch(), at=2.0, vol=0.9, pan=-0.3); m.save('mix.wav')"""
 
@@ -961,7 +993,7 @@ SFX_CATEGORIES = {
 }
 
 
-class _Sfx:
+class _Sfx(_Helpful):
     """Synthesised sound effects, over eighty of them (see sfx.names() and SFX_CATEGORIES). Each method returns a mono sample buffer:
     v.sound(sfx.punch(), at=1.5) or v.sfx("punch", 1.5). Calling the same effect again gives a slightly different take (pitch, noise, length),
     so ten punches never sound like one sample; variant=N gives the same take every time. power (0.5 to 1.5) is how hard, vol how loud.
@@ -1006,7 +1038,7 @@ class _Sfx:
         """An effect by name: sfx.get('punch', power=1.2). Raises a ValueError that lists the names when it does not exist."""
         fn = getattr(self, name, None) if name in self.names() else None
         if fn is None:
-            raise ValueError("no sound effect %r. Available: %s" % (name, ", ".join(self.names())))
+            raise _unknown("sound effect", name, self.names())
         return fn(*args, **kw)
 
     # ---- basic building blocks (the original eight-bit style API) ----
@@ -1893,13 +1925,13 @@ _Sfx.file.__doc__ = "A sound file as a buffer: sfx.file('sounds/punch.wav'). See
 
 
 
-class _Music:
+class _Music(_Helpful):
     """Looping-free background music made from synthesised drums, bass and pads. Returns a mono buffer: video.sound(music.beat(...), at=0)."""
     STYLES = ("fight", "chill", "8bit", "epic")
 
     def beat(self, bpm=120, bars=4, style="fight", key="A", seed=1, vol=0.5):
         if style not in self.STYLES:
-            raise ValueError("style must be one of %s" % ", ".join(self.STYLES))
+            raise _unknown("music style", style, self.STYLES)
         spb = 60.0 / bpm
         m = Mixer(bars * 4 * spb)
         rnd = random.Random(seed)
@@ -2035,7 +2067,7 @@ class Scene:
 _OVERLAP = ("crossfade", "slide_left", "slide_right", "slide_up", "slide_down", "wipe_left", "wipe_right", "zoom")
 
 
-class Video:
+class Video(_Helpful):
     """A video made of scenes. v = Video(1280, 720, fps=30); v.scene(4.0, my_draw_function); v.render().
 
     Coordinates are always in the width x height you give here (1280x720 by default). quality ('draft', 'standard', 'hd', 'fhd') only changes
@@ -2296,7 +2328,7 @@ class Video:
             raise RuntimeError("the video has no scenes yet: call v.scene(duration, draw_function) before v.render()")
         q = os.environ.get("LUMO_VIDEO_QUALITY") or quality or self.quality
         if q not in QUALITY:
-            raise ValueError("quality must be one of: %s" % ", ".join(QUALITY))
+            raise _unknown("quality", q, QUALITY)
         out = os.path.abspath(os.environ.get("LUMO_VIDEO_OUT") or path or _default_out())      # the environment wins: the render_video tool sets it when you ask for a path
         os.makedirs(os.path.dirname(out), exist_ok=True)
         geo = self._geometry(q)
@@ -2624,6 +2656,40 @@ POSES.update({
     "tuck": dict(lean=36, head=10, lua=40, lfa=150, rua=50, rfa=150, lth=-100, lsh=-30, rth=96, rsh=-90, lift=96, roll=-170),
     "flip_land": dict(lean=22, lua=44, lfa=140, rua=60, rfa=150, lth=-58, lsh=58, rth=64, rsh=-46, hx=-6),
 })
+POSES.update({
+    # more attacks
+    "palm_wind": dict(lean=2, rua=62, rfa=150, lua=30, lfa=118, lth=-32, lsh=10, rth=36, rsh=-6, hx=-5),
+    "palm": dict(lean=16, rua=92, rfa=90, lua=34, lfa=124, lth=-40, lsh=16, rth=42, rsh=-12, hx=14),
+    "side_wind": dict(lean=-8, lua=70, lfa=130, rua=76, rfa=140, lth=-6, lsh=0, rth=84, rsh=150, hx=-6),
+    "side": dict(lean=-24, lua=84, lfa=70, rua=120, rfa=130, lth=-4, lsh=0, rth=92, rsh=92, hx=-4),
+    "low_wind": dict(lean=8, lua=46, lfa=130, rua=60, rfa=140, lth=4, lsh=0, rth=-24, rsh=-60, hx=-4),
+    "low": dict(lean=14, lua=44, lfa=130, rua=58, rfa=140, lth=2, lsh=0, rth=70, rsh=62, hx=6),
+    "head_wind": dict(lean=-10, head=-12, lua=40, lfa=120, rua=50, rfa=130, lth=-34, lsh=12, rth=38, rsh=-8),
+    "headbutt": dict(lean=40, head=20, lua=-24, lfa=40, rua=-10, rfa=60, lth=-44, lsh=20, rth=44, rsh=-14, hx=16),
+    "shoulder_wind": dict(lean=22, head=6, lua=40, lfa=130, rua=-10, rfa=70, lth=-50, lsh=40, rth=52, rsh=-30, hx=-8),
+    "shoulder": dict(lean=54, head=-6, lua=-30, lfa=20, rua=60, rfa=140, lth=-60, lsh=24, rth=56, rsh=-20, hx=18),
+    "drop_wind": dict(lean=18, lua=30, lfa=110, rua=40, rfa=120, lth=-40, lsh=60, rth=50, rsh=-40, hx=-6),
+    "drop": dict(lean=-34, lua=60, lfa=100, rua=70, rfa=110, lth=84, lsh=88, rth=92, rsh=94, lift=62, hx=6),
+    "hammer_wind": dict(lean=-8, rua=172, rfa=190, lua=40, lfa=120, lth=-34, lsh=12, rth=38, rsh=-8, hx=-4),
+    "hammer": dict(lean=22, rua=66, rfa=60, lua=46, lfa=126, lth=-44, lsh=18, rth=44, rsh=-12, hx=14),
+    "fknee_wind": dict(lean=20, lua=40, lfa=120, rua=60, rfa=130, lth=-50, lsh=40, rth=50, rsh=-30, hx=-6),
+    "fknee": dict(lean=22, lua=70, lfa=150, rua=80, rfa=150, lth=-10, lsh=0, rth=112, rsh=14, lift=48, hx=10),
+    # acting poses: weapons, gestures, creatures
+    "aim": dict(lean=8, head=-2, lua=88, lfa=92, rua=92, rfa=96, lth=-26, lsh=6, rth=30, rsh=-4),
+    "fire": dict(lean=5, head=-1, lua=86, lfa=90, rua=90, rfa=94, lth=-26, lsh=6, rth=30, rsh=-4, hx=-3),
+    "reload": dict(lean=14, lua=62, lfa=112, rua=26, rfa=96, lth=-26, lsh=6, rth=30, rsh=-4),
+    "throw_wind": dict(lean=-14, rua=-60, rfa=-20, lua=70, lfa=110, lth=-36, lsh=10, rth=40, rsh=-6, hx=-6),
+    "throw": dict(lean=22, rua=120, rfa=100, lua=40, lfa=120, lth=-44, lsh=14, rth=46, rsh=-10, hx=12),
+    "wave_a": dict(lean=0, rua=150, rfa=125, lua=18, lfa=30, lth=-8, lsh=0, rth=8, rsh=0),
+    "wave_b": dict(lean=0, rua=150, rfa=178, lua=18, lfa=30, lth=-8, lsh=0, rth=8, rsh=0),
+    "cheer": dict(lean=-4, lua=165, lfa=172, rua=170, rfa=178, lth=-8, lsh=0, rth=8, rsh=0),
+    "point": dict(lean=6, rua=90, rfa=90, lua=20, lfa=40, lth=-12, lsh=0, rth=14, rsh=0),
+    "salute": dict(lean=0, rua=130, rfa=212, lua=14, lfa=24, lth=-6, lsh=0, rth=6, rsh=0),
+    "surrender": dict(lean=-2, lua=168, lfa=184, rua=168, rfa=184, lth=-6, lsh=0, rth=6, rsh=0),
+    "zombie_stand": dict(lean=18, head=14, lua=80, lfa=96, rua=70, rfa=84, lth=-10, lsh=4, rth=14, rsh=-2),
+    "zombie_lunge": dict(lean=34, head=22, lua=92, lfa=100, rua=88, rfa=98, lth=-30, lsh=20, rth=36, rsh=-14, hx=14),
+    "sit": dict(lean=4, lua=20, lfa=50, rua=30, rfa=70, lth=88, lsh=4, rth=92, rsh=2),
+})
 for _k in list(POSES):
     POSES[_k] = dict(_BASE_POSE, **POSES[_k])
 
@@ -2633,7 +2699,15 @@ _LIMBS = dict(thigh=40.0, shin=40.0, torso=56.0, neck=7.0, head=15.0, upper=30.0
 
 def resolve_pose(p, scale=1.0):
     """A pose given by name or dict -> a complete pose with a numeric hip height 'y' (px at scale 1)."""
-    q = dict(POSES[p]) if isinstance(p, str) else dict(_BASE_POSE, **p)
+    if isinstance(p, str):
+        if p not in POSES:
+            raise _unknown("pose", p, POSES, "Make a new one with define_pose(name, base='guard', lean=.., rua=..) (video_api topic: poses).")
+        q = dict(POSES[p])
+    else:
+        bad = [k for k in p if k not in _NUM_KEYS and k != "y"]
+        if bad:
+            raise _unknown("pose angle", bad[0], _NUM_KEYS)
+        q = dict(_BASE_POSE, **p)
     if "y" not in q:
         drop = max(_LIMBS["thigh"] * math.cos(math.radians(q["lth"])) + _LIMBS["shin"] * math.cos(math.radians(q["lsh"])),
                    _LIMBS["thigh"] * math.cos(math.radians(q["rth"])) + _LIMBS["shin"] * math.cos(math.radians(q["rsh"])))
@@ -2645,6 +2719,111 @@ def blend_pose(a, b, t, easing="in_out_cubic"):
     e = ease(t, easing)
     out = {k: a[k] + (b[k] - a[k]) * e for k in _NUM_KEYS + ("y",)}
     return out
+
+
+GAITS = ("walk", "run", "zombie", "march", "sneak", "limp", "rifle", "sprint")
+
+
+def _gait_pose(style, phase):
+    """A walking pose for a gait (phase in cycles): walk run sprint zombie (arms out, head down) march (stiff, high arm swing) sneak (crouched)
+    limp (one short leg) rifle (walking with a rifle at the ready)."""
+    if style not in GAITS:
+        raise _unknown("gait", style, GAITS)
+    s = math.sin(phase * 2 * math.pi)
+    p = dict(_walk_pose(phase, style in ("run", "sprint")))
+    if style == "zombie":
+        p.update(lean=p["lean"] + 12, head=16, lua=80 + 5 * s, lfa=96, rua=70 - 5 * s, rfa=86)
+    elif style == "march":
+        p.update(lean=2, lua=58 * s + 10, lfa=58 * s + 40, rua=-58 * s + 10, rfa=-58 * s + 40, lsh=p["lth"], rsh=p["rth"])
+    elif style == "sneak":
+        p.update(lean=24, rth=18 * s + 30, lth=-18 * s + 30, rsh=18 * s - 20, lsh=-18 * s - 20, rua=50, rfa=100, lua=50, lfa=100)
+        p.pop("y", None)
+    elif style == "limp":
+        p.update(rth=p["rth"] * 0.4, rsh=p["rth"] * 0.4 - 10, lean=p["lean"] + 6 + 4 * s)
+        p.pop("y", None)
+    elif style == "rifle":
+        p.update(lua=60, lfa=100, rua=64, rfa=104, lean=10)
+    elif style == "sprint":
+        p.update(lean=26)
+    return resolve_pose(p)
+
+
+POSE_ANGLES = {"lean": "torso lean in degrees (+ leans forward)", "head": "head tilt", "lua": "far upper arm", "lfa": "far forearm", "rua": "near upper arm", "rfa": "near forearm",
+               "lth": "far thigh", "lsh": "far shin", "rth": "near thigh", "rsh": "near shin", "roll": "rotate the whole body (degrees)", "hx": "hip shift forward (px)",
+               "lift": "px the body is off the ground (jumps)"}                       # limb angles are absolute: 0 hangs down, 90 points forward, 180 up, negative backward
+_LIMB_NAMES = ("hand_l", "hand_r", "foot_l", "foot_r", "knee_l", "knee_r", "elbow_l", "elbow_r", "head", "chest")
+_NAME_OK = re.compile(r"[a-z][a-z0-9_]{1,30}$")
+
+
+def define_pose(name, base="guard", replace=False, **angles):
+    """Make your own pose: define_pose("salute2", "guard", rua=130, rfa=212). base is an existing pose copied first, then the angles you give are applied.
+    Angles in degrees, absolute: 0 = hanging straight down, 90 = pointing forward, 180 = up, negative = backward. Keys: lean head lua lfa rua rfa lth lsh rth rsh roll hx lift.
+    The new pose can be used everywhere a pose name is accepted (Actor.pose, Move keys, define_move). Returns the finished pose."""
+    if not isinstance(name, str) or not _NAME_OK.match(name):
+        raise ValueError("a pose name is lowercase letters, digits and underscores, starting with a letter (for example 'salute2'), not %r" % (name,))
+    if name in _BUILTIN_POSES and not replace:
+        raise ValueError("%r is a built-in pose; choose another name or pass replace=True" % name)
+    for k, v in angles.items():
+        if k not in POSE_ANGLES:
+            raise _unknown("pose angle", k, POSE_ANGLES, "Angles: " + "; ".join("%s = %s" % kv for kv in POSE_ANGLES.items()))
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError("pose angle %s must be a number of degrees, not %r" % (k, v))
+    q = {k: v for k, v in resolve_pose(base).items() if k != "y"}
+    q.update(angles)
+    POSES[name] = dict(_BASE_POSE, **{k: v for k, v in q.items() if k in _NUM_KEYS})
+    return resolve_pose(name)
+
+
+def define_move(name, keys, hit=None, dur=None, reach=70, dmg=8, kind="head", limb="hand_r", snd="punch", lunge=0, knock=30, launch=False, travel=0, replace=False):
+    """Invent your own move or animation. keys = [(seconds, pose, ease?), ...] with pose a name or a dict (see define_pose); times ascend from 0.
+    Without hit it is a plain animation (Actor.play, Figure3D.play). With hit = the second the blow lands, it is an attack that Fight.attack can use:
+    reach (px), dmg (health points), kind 'head'|'body'|'legs' (which reaction the target plays), limb = the joint that strikes (hand_l hand_r foot_l foot_r
+    knee_l knee_r elbow_l elbow_r head chest), snd = 'punch'|'hit'|'kick'|'smash'|'slap'|'thud'|'crack', lunge/travel = body movement forward (px), knock = push-back (px).
+    Example: define_move("spin_punch", [(0,"guard"),(0.15,"jab_wind"),(0.3,"cross","out_quad"),(0.6,"guard")], hit=0.3, reach=80, dmg=11)."""
+    if not isinstance(name, str) or not _NAME_OK.match(name):
+        raise ValueError("a move name is lowercase letters, digits and underscores, starting with a letter (for example 'spin_punch'), not %r" % (name,))
+    if name in _BUILTIN_MOVES and not replace:
+        raise ValueError("%r is a built-in move; choose another name or pass replace=True" % name)
+    if not isinstance(keys, (list, tuple)) or len(keys) < 2:
+        raise ValueError("keys needs at least two entries: [(0, 'guard'), (0.4, 'jab'), (0.8, 'guard')]")
+    last = -1.0
+    clean = []
+    for k in keys:
+        if not isinstance(k, (list, tuple)) or len(k) < 2 or not isinstance(k[0], (int, float)):
+            raise ValueError("every key is (seconds, pose) or (seconds, pose, ease); got %r" % (k,))
+        if k[0] <= last and not (k[0] == 0 and last < 0):
+            raise ValueError("key times must increase: %r comes after %s" % (k, last))
+        last = k[0]
+        resolve_pose(k[1])                                               # raises with the list of valid poses when the name is wrong
+        if len(k) > 2:
+            ease(0.5, k[2])
+        clean.append(tuple(k))
+    if clean[0][0] != 0:
+        clean.insert(0, (0, clean[0][1]))
+    total = float(dur) if dur else float(clean[-1][0])
+    if total < clean[-1][0] - 1e-9:
+        raise ValueError("dur (%s) is shorter than the last key (%s)" % (total, clean[-1][0]))
+    if hit is not None:
+        if not 0 < hit <= total:
+            raise ValueError("hit must be a time inside the move (0 < hit <= %s)" % total)
+        if kind not in ("head", "body", "legs"):
+            raise _unknown("kind", kind, ("head", "body", "legs"))
+        if limb not in _LIMB_NAMES:
+            raise _unknown("limb", limb, _LIMB_NAMES)
+        if snd not in ("punch", "hit", "kick", "smash", "slap", "thud", "crack"):
+            raise _unknown("hit sound", snd, ("punch", "hit", "kick", "smash", "slap", "thud", "crack"))
+    MOVES[name] = Move(name, total, clean, hit=hit, reach=reach, dmg=dmg, kind=kind, limb=limb, snd=snd, lunge=lunge, knock=knock, launch=launch, travel=travel)
+    return MOVES[name]
+
+
+def moves(attacks=None):
+    """Names of the moves: moves() all, moves(True) only attacks (they can hit), moves(False) only animations."""
+    return sorted(n for n, m in MOVES.items() if attacks is None or bool(m.hit) == bool(attacks))
+
+
+def poses():
+    """Names of every pose."""
+    return sorted(POSES)
 
 
 class Move:
@@ -2685,6 +2864,23 @@ MOVES = {m.name: m for m in [
     Move("round_kick", 0.80, [(0, "guard"), (0.22, "round_chamber"), (0.34, "round_kick", "out_quad"), (0.46, "round_kick"), (0.80, "guard")], hit=0.34, reach=104, dmg=14, kind="head", limb="foot_l", snd="kick", lunge=16, knock=60),
     Move("sweep", 0.64, [(0, "guard"), (0.13, "sweep_wind"), (0.25, "sweep", "out_quad"), (0.40, "sweep"), (0.64, "guard")], hit=0.25, reach=92, dmg=7, kind="legs", limb="foot_r", snd="kick", lunge=10, knock=30),
     Move("flying_kick", 0.95, [(0, "guard"), (0.16, "crouch"), (0.34, "flying", "out_quad"), (0.58, "flying"), (0.80, "kick_chamber"), (0.95, "guard")], hit=0.5, reach=112, dmg=16, kind="body", limb="foot_l", snd="kick", travel=120, knock=70, launch=True),
+    Move("palm_strike", 0.5, [(0, "guard"), (0.08, "palm_wind"), (0.17, "palm", "out_quad"), (0.28, "palm"), (0.5, "guard")], hit=0.17, reach=62, dmg=8, kind="body", limb="hand_r", snd="hit", lunge=18, knock=40),
+    Move("side_kick", 0.74, [(0, "guard"), (0.16, "side_wind"), (0.28, "side", "out_quad"), (0.42, "side"), (0.74, "guard")], hit=0.28, reach=108, dmg=11, kind="body", limb="foot_r", snd="kick", lunge=12, knock=46),
+    Move("low_kick", 0.62, [(0, "guard"), (0.12, "low_wind"), (0.24, "low", "out_quad"), (0.34, "low"), (0.62, "guard")], hit=0.24, reach=92, dmg=7, kind="legs", limb="foot_r", snd="kick", lunge=10, knock=18),
+    Move("headbutt", 0.5, [(0, "guard"), (0.1, "head_wind"), (0.18, "headbutt", "out_quad"), (0.28, "headbutt"), (0.5, "guard")], hit=0.18, reach=44, dmg=9, kind="head", limb="head", snd="hit", lunge=22, knock=30),
+    Move("shoulder_charge", 0.7, [(0, "guard"), (0.14, "shoulder_wind"), (0.28, "shoulder", "out_quad"), (0.46, "shoulder"), (0.7, "guard")], hit=0.28, reach=60, dmg=12, kind="body", limb="chest", snd="hit", travel=70, knock=56),
+    Move("dropkick", 0.9, [(0, "guard"), (0.16, "drop_wind"), (0.32, "drop", "out_quad"), (0.56, "drop"), (0.9, "guard", "in_out_quad")], hit=0.32, reach=112, dmg=14, kind="head", limb="foot_r", snd="kick", travel=88, knock=60, launch=True),
+    Move("hammer_fist", 0.62, [(0, "guard"), (0.14, "hammer_wind"), (0.24, "hammer", "in_quad"), (0.36, "hammer"), (0.62, "guard")], hit=0.24, reach=60, dmg=9, kind="head", limb="hand_r", snd="punch", lunge=16, knock=26),
+    Move("flying_knee", 0.78, [(0, "guard"), (0.14, "fknee_wind"), (0.28, "fknee", "out_quad"), (0.48, "fknee"), (0.78, "guard", "in_out_quad")], hit=0.28, reach=72, dmg=13, kind="head", limb="knee_r", snd="hit", travel=70, knock=52, launch=True),
+    Move("shoot", 0.16, [(0, "aim"), (0.03, "fire", "out_quad"), (0.16, "aim", "in_out_sine")]),
+    Move("reload", 1.5, [(0, "aim"), (0.2, "reload", "in_out_sine"), (1.1, "reload"), (1.5, "aim", "in_out_sine")]),
+    Move("throw", 0.75, [(0, "guard"), (0.22, "throw_wind", "in_out_sine"), (0.4, "throw", "out_quad"), (0.75, "guard")]),
+    Move("wave", 1.4, [(0, "guard"), (0.2, "wave_a"), (0.45, "wave_b"), (0.7, "wave_a"), (0.95, "wave_b"), (1.4, "guard")]),
+    Move("cheer", 1.0, [(0, "guard"), (0.14, "crouch"), (0.3, {**POSES["cheer"], "lift": 38}, "out_quad"), (0.6, "cheer"), (1.0, "guard")]),
+    Move("point", 0.9, [(0, "guard"), (0.2, "point"), (0.7, "point"), (0.9, "guard")]),
+    Move("salute", 1.1, [(0, "guard"), (0.2, "salute"), (0.9, "salute"), (1.1, "guard")]),
+    Move("surrender", 1.2, [(0, "guard"), (0.25, "surrender"), (1.2, "surrender")]),
+    Move("zombie_bite", 0.7, [(0, "zombie_stand"), (0.2, "zombie_lunge", "out_quad"), (0.4, "zombie_lunge"), (0.7, "zombie_stand")]),
     Move("hook", 0.58, [(0, "guard"), (0.12, "hook_wind"), (0.22, "hook", "out_quad"), (0.32, "hook"), (0.58, "guard")], hit=0.22, reach=78, dmg=10, kind="head", limb="hand_l", snd="punch", lunge=20, knock=36),
     Move("elbow", 0.46, [(0, "guard"), (0.07, "elbow_wind"), (0.15, "elbow", "out_quad"), (0.26, "elbow"), (0.46, "guard")], hit=0.15, reach=54, dmg=8, kind="head", limb="elbow_r", snd="hit", lunge=18, knock=22),
     Move("knee", 0.56, [(0, "guard"), (0.1, "knee_wind"), (0.2, "knee", "out_quad"), (0.32, "knee"), (0.56, "guard")], hit=0.2, reach=62, dmg=11, kind="body", limb="knee_r", snd="hit", lunge=24, knock=34),
@@ -2730,7 +2926,7 @@ def _walk_pose(phase, run=False):
     return resolve_pose(p)
 
 
-class Stick:
+class Stick(_Helpful):
     """A stickman. Stick('RYU', color='#4aa3ff', headband='#ffffff', gloves='#ff3b3b').
     You rarely draw it yourself: Fight does it. Direct use: stick.draw(c, x, ground, facing, pose, t) with pose a name from POSES or a dict."""
 
@@ -2855,14 +3051,14 @@ class Stick:
 # ======================================================================================
 # Stage: backgrounds for characters (parallax, drawn in world coordinates)
 # ======================================================================================
-class Stage:
+class Stage(_Helpful):
     """A procedural background with depth. Stage('dojo' | 'city_night' | 'sunset' | 'arena' | 'forest' | 'plain'). Fight draws it for you;
     to use it in your own scene call stage.draw(c, t) after c.camera(...). Everything is deterministic for a given seed."""
     KINDS = ("dojo", "city_night", "sunset", "arena", "forest", "plain")
 
     def __init__(self, kind="dojo", width=1280, height=720, ground=None, seed=3):
         if kind not in self.KINDS:
-            raise ValueError("stage must be one of: %s" % ", ".join(self.KINDS))
+            raise _unknown("stage", kind, self.KINDS)
         self.kind, self.W, self.H, self.g = kind, width, height, ground or int(height * 0.78)
         r = random.Random(seed)
         self.stars = [(r.uniform(-300, width + 300), r.uniform(0, self.g * 0.65), r.uniform(1.0, 2.6), r.random()) for _ in range(80)]
@@ -3075,7 +3271,7 @@ class _Warp:
         return self.v_end + (s - self.s_end)
 
 
-class Fight:
+class Fight(_Helpful):
     """Two stickmen, a stage and a script. Use it by hand or let the director write the fight:
 
         a, b = Stick('BLUE', '#4aa3ff'), Stick('RED', '#ff5252')
@@ -3161,7 +3357,8 @@ class Fight:
         finisher=True knocks the opponent out. Returns the attack record (its 'dmg' can still be changed)."""
         i = self._i(who)
         if move not in MOVES or not MOVES[move].hit:
-            raise ValueError("unknown attack %r; choose one of: %s" % (move, ", ".join(k for k, m in MOVES.items() if m.hit)))
+            raise _unknown("attack", move, [k for k, m in MOVES.items() if m.hit],
+                           "To invent a new attack use define_move(name, keys, hit=..., ...) first, and define_pose(...) for its poses (video_api topic: moves).")
         m = MOVES[move]
         rec = dict(i=i, move=move, t0=at, hit=hit, dmg=float(m.dmg if dmg is None else dmg), finisher=finisher)
         self._attacks.append(rec)
@@ -3918,7 +4115,7 @@ class Fight:
 # ======================================================================================
 # components for explainers, titles and data videos
 # ======================================================================================
-class Typewriter:
+class Typewriter(_Helpful):
     """Text that types itself. tw = Typewriter('Hello world', start=0.5, cps=22); tw.draw(c, t, x, y, size=60, color='white')"""
 
     def __init__(self, text, start=0.0, cps=22.0):
@@ -3936,7 +4133,7 @@ class Typewriter:
         c.text(s + ("|" if cursor and int(t * 2) % 2 == 0 and t < self.end + 1.5 else ""), x, y, size, color, anchor=anchor, **kw)
 
 
-class Particles:
+class Particles(_Helpful):
     """Deterministic particle bursts that need no state: every particle is a formula of time, so scrubbing and re-rendering give the same frames.
     p = Particles(seed=1); p.burst(at=1.0, x=640, y=360, n=40, speed=300, color='#ffd166'); in your scene: p.draw(c, t)."""
 
@@ -3965,7 +4162,7 @@ class Particles:
                 c.circle(px, py, max(0.5, size * (1 - u)), fill=mix(color, "#000000", 0.5 * u))
 
 
-class BarChart:
+class BarChart(_Helpful):
     """Animated horizontal bar chart. BarChart([('Python', 82), ('Go', 55)], colors=PALETTES['neon']).draw(c, t, x=160, y=200, w=900, h=360, start=0.5, dur=1.6)"""
 
     def __init__(self, data, colors=None, maximum=None, label_size=34, fmt="{:.0f}"):
@@ -3987,7 +4184,7 @@ class BarChart:
             c.text(self.fmt.format(val * u), x + 220 + max(bw, 0) + 14, cy, self.label_size * 0.9, "#ffffff", anchor="lm")
 
 
-class Subtitles:
+class Subtitles(_Helpful):
     """Timed captions: Subtitles([(0.5, 3.0, 'Hello'), (3.2, 6.0, 'second line')]).draw(c, t). Fades in and out, with a dark box for contrast."""
 
     def __init__(self, cues, size=40, y=None):
@@ -4041,5 +4238,1366 @@ def _main(argv):
     return 0
 
 
+
+# ======================================================================================
+# Actor and Show: stickmen for ANY scene (not only fights): walking in several gaits, gestures, your own moves and poses, guns, zombies, speech
+# ======================================================================================
+_STRIDE = {"walk": 56.0, "run": 84.0, "sprint": 92.0, "zombie": 40.0, "march": 56.0, "sneak": 44.0, "limp": 48.0, "rifle": 56.0}
+_INF = 1e9
+_SOLDIER_COLORS = ("#4b5d3a", "#2f3d26")
+
+
+class Actor(_Helpful):
+    """One stickman in a Show. You write its timeline with times in seconds; nothing runs until the Show is drawn.
+        hero = Actor("Rex", "#3a7d44", x=200, weapon="rifle", look="soldier", hp=5)
+        zed = Actor("Zed", "#7fb069", x=1350, facing=-1, look="zombie", hp=2)
+        zed.walk(0.5, to=420, speed=70, gait="zombie")         # shambles toward the soldier
+        hero.shoot(2.0, target=zed, hit=True, burst=3)          # three shots; hits take hp, at 0 the target falls
+        hero.say(0.5, "Here they come!", dur=2)
+        hero.play(6.0, "wave")                                  # any move or animation name (moves()), including your own define_move(...)
+        hero.pose(8.0, "salute")                                # hold any pose (poses()), including your own define_pose(...)
+    look: plain | soldier (helmet, vest) | zombie (red eyes, arms out). weapon: rifle | pistol (guns that shoot) | sword | staff | knife (carried).
+    hp: None = no health; a number = health the hits take off (a health bar shows). lane: px of depth (+ is nearer the camera, drawn in front)."""
+
+    LOOKS = ("plain", "soldier", "zombie")
+    WEAPONS = ("rifle", "pistol", "sword", "staff", "knife")
+
+    def __init__(self, name="", color="#4aa3ff", x=300.0, facing=1, scale=1.0, weapon=None, look="plain", hp=None, lane=0.0):
+        if look not in self.LOOKS:
+            raise _unknown("look", look, self.LOOKS)
+        if weapon is not None and weapon not in self.WEAPONS:
+            raise _unknown("weapon", weapon, self.WEAPONS)
+        self.name, self.color, self.x0, self.face0 = name or "ACTOR", color, float(x), (1 if facing >= 0 else -1)
+        self.scale, self.weapon, self.look, self.hp, self.lane = float(scale), weapon, look, hp, float(lane)
+        self.gun = weapon in ("rifle", "pistol")
+        self.stick = Stick(self.name, color, scale=self.scale, weapon=None if self.gun else weapon)
+        self.cmds = []
+        self._n = 0
+        self._ph = (sum(ord(ch) for ch in self.name) % 97) / 10.0
+        self._reset()
+
+    # ---- the timeline (all times in seconds) ----
+    def _add(self, at, kind, **data):
+        if not isinstance(at, (int, float)) or at < 0:
+            raise ValueError("times are seconds from the start of the show, 0 or more (got %r)" % (at,))
+        self._n += 1
+        self.cmds.append(dict(t=float(at), n=self._n, kind=kind, **data))
+        return self
+
+    def place(self, at, x, facing=None):
+        """Jump to ground position x at time `at` (and optionally turn: 1 right, -1 left)."""
+        return self._add(at, "place", x=float(x), facing=facing)
+
+    def walk(self, at, to=None, by=None, dur=None, speed=90.0, gait="walk"):
+        """Walk to ground position `to` (or by a distance, + goes right). dur or speed (px/s) sets how long. gait: see GAITS (walk run sprint zombie march sneak limp rifle)."""
+        if to is None and by is None:
+            raise ValueError("walk needs to= (a ground position in px) or by= (a distance, + goes right)")
+        if gait not in GAITS:
+            raise _unknown("gait", gait, GAITS)
+        return self._add(at, "walk", to=to, by=by, dur=dur, speed=float(speed), gait=gait)
+
+    def pose(self, at, name, dur=None):
+        """Hold a pose (any name in poses()) from `at` for dur seconds, or until the next command."""
+        resolve_pose(name)
+        return self._add(at, "pose", pose=name, dur=dur)
+
+    def play(self, at, move, speed=1.0):
+        """Play a move or animation by name (see moves(); define_move makes new ones). speed 2.0 = twice as fast."""
+        if move not in MOVES:
+            raise _unknown("move", move, MOVES, "Invent one with define_move(name, keys) (video_api topic: moves).")
+        return self._add(at, "play", move=move, speed=float(speed))
+
+    def face(self, at, direction):
+        """Turn to face 'right' (1) or 'left' (-1)."""
+        d = 1 if direction in (1, "right") else -1 if direction in (-1, "left") else None
+        if d is None:
+            raise ValueError("direction must be 'right', 'left', 1 or -1")
+        return self._add(at, "face", dir=d)
+
+    def say(self, at, text, dur=2.0):
+        """A caption above the head."""
+        return self._add(at, "say", text=str(text), dur=float(dur))
+
+    def shoot(self, at, target=None, hit=True, dmg=1, burst=1, gap=0.1, to_x=None, kill=False):
+        """Fire the gun (weapon='rifle' or 'pistol'). target = an Actor (it is faced and the tracer goes to its chest); hit=True takes `dmg` hp off it (kill=True
+        makes it fall at once), hit=False misses. burst shots are fired `gap` seconds apart. Without a target the bullets fly to to_x (or off the screen)."""
+        if not self.gun:
+            raise ValueError("%s has no gun: create it with Actor(..., weapon='rifle') or weapon='pistol'" % self.name)
+        if target is not None and not isinstance(target, Actor):
+            raise ValueError("target must be another Actor (or None)")
+        return self._add(at, "shoot", target=target, hit=bool(hit), dmg=float(dmg), burst=max(1, int(burst)), gap=float(gap), to_x=to_x, kill=bool(kill))
+
+    def reload(self, at):
+        return self.play(at, "reload")
+
+    def hurt(self, at):
+        """Flinch as if hit (flash and stagger)."""
+        return self._add(at, "hurt")
+
+    def die(self, at):
+        """Fall and stay down (fades out after a moment). The position freezes where it fell."""
+        return self._add(at, "die")
+
+    def visible(self, at, on=True):
+        """Show or hide the actor from time `at` on (to appear or disappear)."""
+        return self._add(at, "visible", on=bool(on))
+
+    def jump(self, at):
+        return self.play(at, "jump")
+
+    def wave(self, at):
+        return self.play(at, "wave")
+
+    def cheer(self, at):
+        return self.play(at, "cheer")
+
+    def point(self, at):
+        return self.play(at, "point")
+
+    def salute(self, at):
+        return self.play(at, "salute")
+
+    def surrender(self, at):
+        return self.play(at, "surrender")
+
+    def bite(self, at):
+        """A zombie lunge."""
+        return self.play(at, "zombie_bite")
+
+    # ---- compile: positions, facing, clips (called by Show) ----
+    def _reset(self):
+        self._segs, self._faces, self._clips, self._extra, self._bubbles = [], [(0.0, self.face0)], [], [], []
+        self._vis, self._dead, self._flash, self._tracks, self._labels, self._shots = [(0.0, True)], None, [], None, None, []
+
+    def _x_raw(self, t):
+        x = self.x0
+        for (t0, t1, a, b, g) in self._segs:
+            if t0 > t:
+                break
+            x = b if t >= t1 else a + (b - a) * ((t - t0) / (t1 - t0))
+        return x
+
+    def _x_at(self, t):
+        return self._x_raw(min(t, self._dead) if self._dead is not None else t)
+
+    def _facing_at(self, t):
+        d = self.face0
+        for (tt, dd) in self._faces:
+            if tt <= t:
+                d = dd
+        return d
+
+    def _prep(self):
+        self._reset()
+        cmds = sorted(self.cmds, key=lambda c: (c["t"], c["n"]))
+        for c in cmds:
+            t, k = c["t"], c["kind"]
+            if k == "place":
+                self._segs.append((t, t, c["x"], c["x"], None))
+                if c["facing"] is not None:
+                    self._faces.append((t, 1 if c["facing"] >= 0 else -1))
+            elif k == "walk":
+                start = self._x_raw(t)
+                target = float(c["to"]) if c["to"] is not None else start + float(c["by"])
+                dur = float(c["dur"]) if c["dur"] else max(0.05, abs(target - start) / max(c["speed"], 1.0))
+                self._segs.append((t, t + dur, start, target, c["gait"]))
+                if target != start:
+                    self._faces.append((t, 1 if target > start else -1))
+            elif k == "face":
+                self._faces.append((t, c["dir"]))
+            elif k == "pose":
+                nxt = min([o["t"] for o in cmds if o["t"] > t and o["kind"] in ("pose", "play", "walk", "hurt", "die", "shoot")] or [_INF])
+                self._clips.append(dict(t0=t, t1=(t + c["dur"]) if c["dur"] else nxt, kind="pose", pose=c["pose"], prio=1, speed=1.0))
+            elif k == "play":
+                m = MOVES[c["move"]]
+                self._clips.append(dict(t0=t, t1=t + m.dur / c["speed"], kind="move", move=m, prio=2, speed=c["speed"]))
+            elif k == "say":
+                self._bubbles.append((t, t + c["dur"], c["text"]))
+            elif k == "visible":
+                self._vis.append((t, c["on"]))
+            elif k == "hurt":
+                self._react("hurt", t)
+            elif k == "die":
+                self._react("die", t)
+            elif k == "shoot":
+                self._shots.append(c)
+
+    def _react(self, kind, t):
+        if kind == "die":
+            if self._dead is None or t < self._dead:
+                self._dead = t
+            self._extra.append(dict(t0=t, t1=_INF, kind="move", move=MOVES["knockdown"], prio=4, speed=1.0))
+        else:
+            self._extra.append(dict(t0=t, t1=t + MOVES["knockback"].dur, kind="move", move=MOVES["knockback"], prio=3, speed=1.0))
+            self._flash.append(t)
+
+    def _clip_at(self, t):
+        best = None
+        for c in self._clips + self._extra:
+            if c["t0"] <= t < c["t1"] and (best is None or (c["prio"], c["t0"]) >= (best["prio"], best["t0"])):
+                if self._dead is not None and t >= self._dead and c["prio"] < 4:
+                    continue
+                best = c
+        return best
+
+    def _walking(self, t):
+        cur = None
+        for (t0, t1, a, b, g) in self._segs:
+            if t0 <= t < t1 and g is not None and abs(b - a) > 1e-6:
+                cur = (a, b, t0, t1, g)
+        return cur
+
+    def _raw(self, t):
+        clip = self._clip_at(t)
+        if clip is not None:
+            if clip["kind"] == "move":
+                return clip["move"].pose_at((t - clip["t0"]) * clip["speed"]), clip["move"].name, ("clip", id(clip))
+            return resolve_pose(clip["pose"]), clip["pose"], ("clip", id(clip))
+        w = self._walking(t)
+        if w is not None:
+            a, b, t0, t1, g = w
+            fc = self._facing_at(t)
+            sgn = 1.0 if (b - a) * fc > 0 else -1.0
+            return _gait_pose(g, sgn * self._x_at(t) * fc / _STRIDE.get(g, 56.0)), g, ("loco", g)
+        s = math.sin(t * 2.4 + self._ph)
+        p = dict(POSES["zombie_stand" if self.look == "zombie" else "aim" if self.gun else "idle"])
+        if self.look == "zombie":
+            p["lean"] += 3 * s
+            p["head"] += 4 * math.sin(t * 1.3 + self._ph)
+            p["lua"] += 4 * math.sin(t * 2.1 + self._ph)
+            p["rua"] -= 4 * math.sin(t * 2.1 + self._ph)
+        else:
+            p["lua"] += 1.5 * s
+            p["rua"] -= 1.5 * s
+            p["lean"] += 0.8 * s
+        p.pop("y", None)
+        return resolve_pose(p), "idle", ("loco", "idle")
+
+    def _build(self, T):
+        """Sample the figure at 120 Hz and blend every change of action from the pose the body really had (the movement never snaps)."""
+        hz = 120.0
+        n = int(T * hz) + 2
+        tr, lb = [], []
+        seg, seg_t0, anchor, B, prev = None, 0.0, None, 0.1, None
+        for k in range(n):
+            t = k / hz
+            raw, label, key = self._raw(t)
+            if key != seg:
+                seg, seg_t0 = key, t
+                clip = self._clip_at(t)
+                B = (0.05 if clip["prio"] >= 3 else 0.09 if clip["prio"] == 2 else 0.16) if key[0] == "clip" else 0.15
+                anchor = prev if prev is not None else None
+            if anchor is not None and t - seg_t0 < B:
+                pose = blend_pose(anchor, raw, (t - seg_t0) / B, "in_out_sine")
+            else:
+                pose, anchor = raw, None
+            tr.append(pose)
+            lb.append(label)
+            prev = pose
+        self._tracks, self._labels = tr, lb
+
+    def pose_at(self, t):
+        tr = self._tracks
+        f = t * 120.0
+        if f <= 0:
+            return tr[0], self._labels[0]
+        k = int(f)
+        if k >= len(tr) - 1:
+            return tr[-1], self._labels[-1]
+        u = f - k
+        a, b = tr[k], tr[k + 1]
+        return {key: a[key] + (b[key] - a[key]) * u for key in a}, self._labels[k]
+
+    def _visible(self, t):
+        on = True
+        for (tt, v) in self._vis:
+            if tt <= t:
+                on = v
+        return on
+
+    def _barrel(self, J, fc):
+        """(stock, muzzle) points of the gun for the joints J of an aimed pose."""
+        sc = self.scale
+        hr, hl, ch = J["hand_r"], J["hand_l"], J["chest"]
+        dx, dy = hl[0] - ch[0], hl[1] - ch[1]
+        ln = math.hypot(dx, dy)
+        dx, dy = (dx / ln, dy / ln) if ln > 1e-6 else (float(fc), 0.0)
+        a, b = (26.0, 50.0) if self.weapon == "rifle" else (6.0, 24.0)
+        return (hr[0] - dx * a * sc, hr[1] - dy * a * sc), (hr[0] + dx * b * sc, hr[1] + dy * b * sc), (dx, dy)
+
+    # ---- drawing ----
+    def _draw(self, c, show, t):
+        if not self._visible(t):
+            return
+        alpha = 1.0
+        if self._dead is not None and t > self._dead + 1.7:
+            alpha = 1.0 - ease((t - self._dead - 1.7) / 0.8, "in_out_sine")
+        if alpha <= 0.02:
+            return
+        x, fc = self._x_at(t), self._facing_at(t)
+        pose, label = self.pose_at(t)
+        fl = 0.0
+        for te in self._flash:
+            e = t - te
+            if 0 <= e < 0.16:
+                fl = max(fl, 0.8 * (1 - e / 0.16))
+        g = show.ground + self.lane
+        J = self.stick.draw(c, x, g, fc, pose, t, alpha=alpha, flash=fl)
+        sc = self.scale
+        hx, hy = J["head"]
+        r = _LIMBS["head"] * sc
+        if self.look == "soldier":
+            if alpha > 0.95:
+                c.line(J["chest"][0], J["chest"][1] + 3 * sc, J["hip"][0], J["hip"][1], _SOLDIER_COLORS[0], 12 * sc)
+            c.ellipse(hx, hy - 0.45 * r, 1.22 * r, 0.8 * r, fill=_SOLDIER_COLORS[0], outline=_SOLDIER_COLORS[1], width=2, alpha=alpha)
+            c.line(hx - 0.2 * r * fc, hy - 0.12 * r, hx + 1.35 * r * fc, hy - 0.12 * r, _SOLDIER_COLORS[1], 3 * sc)
+        elif self.look == "zombie" and alpha > 0.5:
+            for k2 in (0.2, 0.62):
+                c.circle(hx + fc * k2 * r, hy - 0.12 * r, 2.2 * sc, fill="#ff3b3b", alpha=alpha)
+        if self.gun:
+            stock, muzzle, d = self._barrel(J, fc)
+            dark = "#23262b"
+            c.line(stock[0], stock[1], muzzle[0], muzzle[1], dark, (7 if self.weapon == "rifle" else 5) * sc)
+            c.line(stock[0] + d[0] * 6 * sc, stock[1] + d[1] * 6 * sc - 2 * sc, muzzle[0] - d[0] * 8 * sc, muzzle[1] - d[1] * 8 * sc - 2 * sc, "#4a4f57", 2.5 * sc)
+            if self.weapon == "rifle":
+                mx, my = stock[0] + d[0] * 20 * sc, stock[1] + d[1] * 20 * sc
+                c.line(mx, my, mx - d[1] * 9 * sc * fc * 0 + 2 * sc * fc * -1, my + 11 * sc, dark, 5 * sc)
+        if self.hp is not None and alpha > 0.5 and self._dead is None:
+            frac = clamp(show._hp_at(self, t) / float(self.hp)) if self.hp else 0.0
+            bw = 46 * sc
+            by = hy - 30 * sc
+            c.rect(hx - bw / 2, by, bw, 6 * sc, fill="#1b1f2a", radius=3, alpha=0.8)
+            if frac > 0:
+                c.rect(hx - bw / 2, by, bw * frac, 6 * sc, fill="#3ddc84" if frac > 0.5 else "#ffb347" if frac > 0.25 else "#ff5252", radius=3)
+        for (t0, t1, text) in self._bubbles:
+            if t0 <= t < t1 and alpha > 0.5:
+                c.text(text, hx, hy - 54 * sc, 30, "#ffffff", outline="#000000", outline_w=4, alpha=clamp(min((t - t0) / 0.15, (t1 - t) / 0.2)))
+
+
+class Show(_Helpful):
+    """A scene with Actors on a Stage: add it to a Video (v.add(show)). The camera is still unless you give camera_keys. Actors do everything; the Show draws the
+    stage, the bullets, muzzle flashes, shells, hits, explosions and captions, and plays the sounds.
+        show = Show("city_night", [hero, zed], title="Last Stand", music="epic", duration=20)
+        show.explode(9.0, x=700, radius=180)           # everything near x falls (or is hurt)
+        show.text(0.3, "THEY ARE COMING", dur=1.6, style="slam")
+        show.camera_keys([(0, 640, 1.0), (10, 500, 1.3)])      # (seconds, centre x, zoom)
+        v = Video(1280, 720); v.add(show); v.render()
+    """
+
+    def __init__(self, stage="city_night", actors=(), width=1280, height=720, ground=None, title=None, music=None, seed=3, duration=None):
+        self.W, self.H, self.title, self.music, self.seed = width, height, title, music, seed
+        self.stage = Stage(stage, width, height, ground, seed)
+        self.ground = self.stage.g
+        self.actors = list(actors)
+        self._dur = duration
+        self._texts, self._user_sounds, self._booms, self._cam, self._shakes_user = [], [], [], None, []
+        self._done = False
+
+    def add(self, *actors):
+        for a in actors:
+            if not isinstance(a, Actor):
+                raise ValueError("Show.add takes Actor objects")
+            self.actors.append(a)
+        self._done = False
+        return self
+
+    def text(self, at, s, dur=1.5, size=110, color="#ffffff", style="pop", y=None):
+        """A big caption in the middle of the screen. style: pop | slam | fade."""
+        if style not in ("pop", "slam", "fade"):
+            raise _unknown("text style", style, ("pop", "slam", "fade"))
+        self._texts.append(dict(t0=at, t1=at + dur, s=s, size=size, color=color, style=style, y=y))
+        self._done = False
+
+    def sound(self, at, buf, vol=1.0, pan=0.0):
+        self._user_sounds.append((at, buf, vol, pan))
+
+    def shake(self, at, amount=10.0):
+        self._shakes_user.append((at, amount))
+
+    def explode(self, at, x, y=None, radius=170.0, kill=True):
+        """An explosion on the ground at x: flash, fireball, shock ring, dust, shake, sound. Actors within `radius` px fall (kill=True) or flinch."""
+        self._booms.append(dict(t=float(at), x=float(x), y=y, radius=float(radius), kill=bool(kill)))
+        self._done = False
+
+    def camera_keys(self, keys):
+        """The camera path: [(seconds, centre x, zoom), ...]; it eases between the keys."""
+        ks = sorted((float(a), float(b), float(c)) for a, b, c in keys)
+        if not ks:
+            raise ValueError("camera_keys needs at least one (seconds, x, zoom)")
+        self._cam = ks
+
+    @property
+    def end(self):
+        return getattr(self, "start", 0.0) + self.duration
+
+    @property
+    def duration(self):
+        if self._dur:
+            return float(self._dur)
+        last = 0.0
+        for a in self.actors:
+            for c in a.cmds:
+                last = max(last, c["t"] + (c.get("dur") or 0) + (1.0 if c["kind"] in ("play", "shoot", "walk") else 0))
+        for t in self._texts:
+            last = max(last, t["t1"])
+        for b in self._booms:
+            last = max(last, b["t"] + 1.5)
+        return last + 1.5
+
+    # ---- compile ----
+    def _hp_at(self, actor, t):
+        v = float(actor.hp)
+        for (tt, d) in self._hits.get(id(actor), []):
+            if tt <= t:
+                v -= d
+        return max(0.0, v)
+
+    def _compile(self):
+        if self._done:
+            return
+        T = self.duration + 3.0
+        rnd = random.Random(self.seed)
+        for a in self.actors:
+            a._prep()
+            a._build(T)
+        self._fx, self._snd, self._hits, self._shakes, self.stats = [], list(self._user_sounds), {}, list(self._shakes_user), {"shots": 0, "hits": 0, "kills": 0}
+        ground = self.ground
+        events = []
+        for a in self.actors:
+            for c in a._shots:
+                for k in range(c["burst"]):
+                    events.append((c["t"] + k * c["gap"], 0, a, c))
+        for b in self._booms:
+            events.append((b["t"], 1, None, b))
+        events.sort(key=lambda e: (e[0], e[1]))
+        hp = {id(a): (float(a.hp) if a.hp is not None else None) for a in self.actors}
+        counts = {}
+
+        def snd(name, **kw):
+            k = counts.get(name, 0)
+            counts[name] = k + 1
+            return getattr(sfx, name)(variant=k % 5, **kw)
+
+        def fall(tg, ti, how="shot"):
+            if tg._dead is not None:
+                return
+            tg._react("die", ti)
+            self.stats["kills"] += 1
+            self._snd.append((ti, snd("zombie_death") if tg.look == "zombie" else snd("pain"), 0.8, 0.0))
+            self._fx.append(dict(kind="dust", t=ti + 0.35, x=tg._x_at(ti), y=ground + tg.lane))
+            self._snd.append((ti + 0.4, snd("fall", power=0.7), 0.5, 0.0))
+
+        for (t, order, a, c) in events:
+            if order == 1:                                                       # an explosion
+                gy = c["y"] if c["y"] is not None else ground - 20
+                self._fx.append(dict(kind="boom", t=t, x=c["x"], y=gy, r=c["radius"]))
+                self._snd.append((t, snd("explosion"), 1.0, 0.0))
+                self._shakes.append((t, 22.0))
+                for tg in self.actors:
+                    if tg._dead is None and tg._visible(t) and abs(tg._x_at(t) - c["x"]) <= c["radius"]:
+                        if c["kill"] or hp[id(tg)] is not None:
+                            self.stats["hits"] += 1
+                            fall(tg, t + 0.05, "blast")
+                        else:
+                            tg._react("hurt", t + 0.05)
+                continue
+            x, fc0 = a._x_at(t), a._facing_at(t)
+            tg = c["target"]
+            fc = fc0
+            if tg is not None:
+                fc = 1 if tg._x_at(t) >= x else -1
+                a._faces.append((t - 0.3, fc))
+                a._faces.sort(key=lambda f: f[0])
+            J = a.stick.joints(x, ground + a.lane, fc, resolve_pose("fire"))
+            stock, muzzle, d = a._barrel(J, fc)
+            if tg is not None:
+                Jt = tg.stick.joints(tg._x_at(t + 0.05), ground + tg.lane, tg._facing_at(t), resolve_pose("idle"))
+                ix, iy = Jt["chest"]
+                end = (ix, iy) if c["hit"] else (ix + fc * 300, iy + rnd.uniform(-40, 40))
+            else:
+                end = ((c["to_x"] if c["to_x"] is not None else muzzle[0] + fc * 1500), muzzle[1] + rnd.uniform(-6, 6))
+            self.stats["shots"] += 1
+            self._fx.append(dict(kind="flash", t=t, x=muzzle[0], y=muzzle[1], dx=d[0], dy=d[1]))
+            self._fx.append(dict(kind="tracer", t=t, x0=muzzle[0], y0=muzzle[1], x1=end[0], y1=end[1]))
+            self._fx.append(dict(kind="shell", t=t + 0.02, x=J["hand_r"][0], y=J["hand_r"][1], vx=-fc * (60 + rnd.uniform(0, 50)), vy=-(170 + rnd.uniform(0, 90)), g=ground + a.lane))
+            self._snd.append((t, snd("rifle" if a.weapon == "rifle" else "pistol"), 0.8, -0.3 if x < self.W / 2 else 0.3))
+            self._snd.append((t + 0.16, snd("shell"), 0.25, 0.0))
+            self._shakes.append((t, 1.6))
+            a._extra.append(dict(t0=t, t1=t + 0.16, kind="move", move=MOVES["shoot"], prio=2, speed=1.0))
+            a._extra.append(dict(t0=t - 0.25, t1=t + 0.6, kind="pose", pose="aim", prio=1, speed=1.0))
+            if tg is not None and c["hit"] and tg._dead is None and tg._visible(t):
+                ti = t + math.hypot(end[0] - muzzle[0], end[1] - muzzle[1]) / 4500.0
+                self.stats["hits"] += 1
+                self._fx.append(dict(kind="spark", t=ti, x=end[0], y=end[1], dir=fc))
+                self._hits.setdefault(id(tg), []).append((ti, c["dmg"]))
+                if hp[id(tg)] is not None:
+                    hp[id(tg)] -= c["dmg"]
+                if c["kill"] or (hp[id(tg)] is not None and hp[id(tg)] <= 0):
+                    fall(tg, ti)
+                else:
+                    tg._react("hurt", ti)
+                    self._snd.append((ti, snd("thud", power=0.6), 0.5, 0.0))
+                    if tg.look == "zombie" and rnd.random() < 0.5:
+                        self._snd.append((ti + 0.05, snd("groan", dur=0.6), 0.4, 0.0))
+        for a in self.actors:
+            a._faces.sort(key=lambda f: f[0])
+            a._build(T)
+        self._done = True
+
+    def summary(self):
+        self._compile()
+        alive = [a.name for a in self.actors if a._dead is None]
+        return {"duration": round(self.duration, 2), "actors": [a.name for a in self.actors], "alive": alive, "fallen": [a.name for a in self.actors if a._dead is not None],
+                "shots": self.stats["shots"], "hits": self.stats["hits"], "kills": self.stats["kills"]}
+
+    def on_add(self, video):
+        """Called by Video.add: puts the sounds (and music) on the video's sound track."""
+        self._compile()
+        base = getattr(self, "start", 0.0)
+        for (t, buf, vol, pan) in self._snd:
+            video.sound(buf, base + t, vol, pan)
+        if self.music:
+            style = self.music if self.music in _Music.STYLES else "fight"
+            bpm = {"fight": 128, "epic": 100, "8bit": 140, "chill": 90}[style]
+            bars = int(math.ceil(self.duration / (4 * 60.0 / bpm)))
+            video.sound(music.beat(bpm, bars, style, vol=0.9), base, 0.3)
+
+    # ---- drawing ----
+    def _camera(self, t):
+        ks = self._cam
+        if ks:
+            if t <= ks[0][0]:
+                x, z = ks[0][1], ks[0][2]
+            elif t >= ks[-1][0]:
+                x, z = ks[-1][1], ks[-1][2]
+            else:
+                for i in range(1, len(ks)):
+                    if t < ks[i][0]:
+                        u = ease((t - ks[i - 1][0]) / (ks[i][0] - ks[i - 1][0]), "in_out_sine")
+                        x, z = ks[i - 1][1] + (ks[i][1] - ks[i - 1][1]) * u, ks[i - 1][2] + (ks[i][2] - ks[i - 1][2]) * u
+                        break
+        else:
+            x, z = self.W / 2.0, 1.0
+        g = self.ground
+        cy = g - (g - self.H / 2.0) / z
+        sh = 0.0
+        for (ts, amp) in self._shakes:
+            e = t - ts
+            if 0 <= e < 0.5:
+                sh += amp * math.exp(-e * 9.0)
+        return x, cy, z, min(sh, 26.0)
+
+    def _draw_fx(self, c, fx, e):
+        k = fx["kind"]
+        if k == "flash" and e < 0.07:
+            c.glow(fx["x"], fx["y"], 64, "#ffd166", 1.0 - e / 0.07)
+            for j in range(5):
+                a = math.atan2(fx["dy"], fx["dx"]) + (j - 2) * 0.42
+                ln = (30 if j % 2 == 0 else 18) * (1 - e / 0.1)
+                c.line(fx["x"], fx["y"], fx["x"] + math.cos(a) * ln, fx["y"] + math.sin(a) * ln, "#fff2b0", 3)
+        elif k == "tracer" and e < 0.1:
+            p = clamp(e / 0.07)
+            hx, hy = fx["x0"] + (fx["x1"] - fx["x0"]) * p, fx["y0"] + (fx["y1"] - fx["y0"]) * p
+            q = max(0.0, p - 0.4)
+            c.line(fx["x0"] + (fx["x1"] - fx["x0"]) * q, fx["y0"] + (fx["y1"] - fx["y0"]) * q, hx, hy, "#ffe9a8", 3)
+        elif k == "shell" and e < 1.0:
+            x, y = fx["x"] + fx["vx"] * e, fx["y"] + fx["vy"] * e + 560 * e * e
+            c.rect(x, min(y, fx["g"] - 2), 7, 3, fill="#d9a441", anchor="mm", alpha=clamp(1.6 - e))
+        elif k == "spark" and e < 0.2:
+            u = e / 0.2
+            c.glow(fx["x"], fx["y"], 34 * (1 - u * 0.4), "#c6ff6b", 0.8 * (1 - u))
+            for j in range(6):
+                a = j * 1.05 + 0.4
+                c.line(fx["x"] + math.cos(a) * 6, fx["y"] + math.sin(a) * 6, fx["x"] + math.cos(a) * (10 + 24 * u), fx["y"] + math.sin(a) * (10 + 24 * u), "#e9ffb0", 3)
+        elif k == "dust" and e < 0.8:
+            u = e / 0.8
+            for j in range(7):
+                a = (j - 3) * 0.55
+                c.circle(fx["x"] + math.sin(a) * 80 * u + (j % 2) * 8, fx["y"] - 10 - 36 * u * (0.5 + (j % 3) * 0.25), 14 * (1 - u * 0.6) + 4, fill=mix("#cdbb9d", "#ffffff", 0.2 * (1 - u)), alpha=0.9 * (1 - u * 0.6))
+        elif k == "boom" and e < 1.3:
+            u = e / 1.3
+            r = fx["r"]
+            c.glow(fx["x"], fx["y"], r * (0.9 + 0.8 * ease(u * 2, "out_cubic")), "#ffb347", 1.0 - u)
+            if e < 0.5:
+                c.circle(fx["x"], fx["y"], r * 0.9 * ease(e / 0.5, "out_cubic"), outline="#fff1c9", width=6, alpha=1.0 - e / 0.5)
+                c.circle(fx["x"], fx["y"] - 20 * u, r * 0.55 * (1 - e / 1.0), fill="#ff7a1a", alpha=0.9 * (1 - e / 0.5))
+            for j in range(9):
+                a = j * 0.7
+                d = r * (0.3 + 0.9 * ease(u, "out_cubic"))
+                c.circle(fx["x"] + math.cos(a) * d, fx["y"] - abs(math.sin(a)) * d * 0.7 + 90 * u * u, 7 * (1 - u) + 2, fill="#3a3028", alpha=1.0 - u)
+            if e < 0.1:
+                c.tint("#ffffff", 0.5 * (1 - e / 0.1)) if hasattr(c, "tint") else None
+
+    def draw(self, c, t):
+        self._compile()
+        cx, cy, zoom, shake = self._camera(t)
+        c.camera(cx, cy, zoom, shake=shake)
+        self.stage.draw(c, t)
+        for a in sorted(self.actors, key=lambda a: a.lane):
+            a._draw(c, self, t)
+        for fx in self._fx:
+            e = t - fx["t"]
+            if e >= -1e-6:
+                self._draw_fx(c, fx, e)
+        c.vignette(0.3)
+        with c.screen():
+            if self.title:
+                c.text(self.title, self.W / 2, 34, 28, "#ffffff", outline="#000000", outline_w=3, alpha=0.85)
+            for tx in self._texts:
+                if tx["t0"] <= t < tx["t1"]:
+                    e = t - tx["t0"]
+                    scale, alpha, jx = 1.0, 1.0, 0.0
+                    if tx["style"] == "pop":
+                        scale = ease(e / 0.28, "out_back")
+                    elif tx["style"] == "slam":
+                        scale = 1.0 + 1.6 * (1 - ease(e / 0.18, "out_cubic"))
+                        jx = noise(e * 40, 9) * 14 * (1 - ease(e / 0.5, "out_quad"))
+                    left = tx["t1"] - t
+                    if left < 0.3:
+                        alpha = clamp(left / 0.3)
+                    c.text(tx["s"], self.W / 2 + jx, tx["y"] if tx["y"] is not None else self.H * 0.38, tx["size"], tx["color"], outline="#000000", outline_w=max(4, tx["size"] / 16.0),
+                           scale=scale, alpha=alpha, shadow=(0, tx["size"] / 20.0, "#000000"))
+
+
+
+# ======================================================================================
+# Scene3D: real 3D drawn with Pillow (perspective camera, lighting, fog, shadows, depth sorting): low-poly worlds and 3D stick figures that use the SAME
+# poses and moves as the 2D ones (your define_pose / define_move work in 3D too). World axes: x right, y up, z away from a camera that looks along +z.
+# ======================================================================================
+def _vsub(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _vcross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def _vdot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _vnorm(a):
+    ln = math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]) or 1.0
+    return (a[0] / ln, a[1] / ln, a[2] / ln)
+
+
+def _rot3(v, rx, ry, rz):
+    """Rotate a point by degrees about z, then x, then y (yaw: +90 turns +x into +z)."""
+    x, y, z = v
+    if rz:
+        c, s = math.cos(math.radians(rz)), math.sin(math.radians(rz))
+        x, y = x * c - y * s, x * s + y * c
+    if rx:
+        c, s = math.cos(math.radians(rx)), math.sin(math.radians(rx))
+        y, z = y * c - z * s, y * s + z * c
+    if ry:
+        c, s = math.cos(math.radians(ry)), math.sin(math.radians(ry))
+        x, z = x * c - z * s, x * s + z * c
+    return (x, y, z)
+
+
+def _mesh_box(w, h, d):
+    x, y, z = w / 2.0, h / 2.0, d / 2.0
+    v = [(-x, -y, -z), (x, -y, -z), (x, y, -z), (-x, y, -z), (-x, -y, z), (x, -y, z), (x, y, z), (-x, y, z)]
+    return v, [(0, 3, 2, 1), (4, 5, 6, 7), (0, 4, 7, 3), (1, 2, 6, 5), (0, 1, 5, 4), (3, 7, 6, 2)]
+
+
+def _mesh_cyl(r, h, seg=12, r2=None):
+    r2 = r if r2 is None else r2
+    v = [(r * math.cos(2 * math.pi * i / seg), -h / 2.0, r * math.sin(2 * math.pi * i / seg)) for i in range(seg)]
+    v += [(r2 * math.cos(2 * math.pi * i / seg), h / 2.0, r2 * math.sin(2 * math.pi * i / seg)) for i in range(seg)]
+    f = [(i, (i + 1) % seg, seg + (i + 1) % seg, seg + i) for i in range(seg)]
+    f.append(tuple(range(seg)))
+    f.append(tuple(range(seg, 2 * seg)))
+    return v, f
+
+
+def _mesh_sphere(r, seg=10, ring=6):
+    v = [(0.0, r, 0.0)]
+    for j in range(1, ring):
+        a = math.pi * j / ring
+        for i in range(seg):
+            b = 2 * math.pi * i / seg
+            v.append((r * math.sin(a) * math.cos(b), r * math.cos(a), r * math.sin(a) * math.sin(b)))
+    v.append((0.0, -r, 0.0))
+    f = []
+    for i in range(seg):
+        f.append((0, 1 + i, 1 + (i + 1) % seg))
+    for j in range(ring - 2):
+        for i in range(seg):
+            a, b = 1 + j * seg + i, 1 + j * seg + (i + 1) % seg
+            f.append((a, a + seg, b + seg, b))
+    last = len(v) - 1
+    for i in range(seg):
+        f.append((last, last - seg + (i + 1) % seg, last - seg + i))
+    return v, f
+
+
+def _prism(p, q, r0, r1=None, sides=6):
+    """A tapered prism from point p to point q: arms, legs, torsos."""
+    r1 = r0 if r1 is None else r1
+    ax = _vnorm(_vsub(q, p))
+    ref = (0.0, 1.0, 0.0) if abs(ax[1]) < 0.95 else (1.0, 0.0, 0.0)
+    u = _vnorm(_vcross(ax, ref))
+    w = _vcross(ax, u)
+    v = []
+    for base, r in ((p, r0), (q, r1)):
+        for i in range(sides):
+            a = 2 * math.pi * i / sides
+            ca, sa = math.cos(a) * r, math.sin(a) * r
+            v.append((base[0] + u[0] * ca + w[0] * sa, base[1] + u[1] * ca + w[1] * sa, base[2] + u[2] * ca + w[2] * sa))
+    f = [(i, (i + 1) % sides, sides + (i + 1) % sides, sides + i) for i in range(sides)]
+    f.append(tuple(range(sides)))
+    f.append(tuple(range(sides, 2 * sides)))
+    return v, f, ((p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0, (p[2] + q[2]) / 2.0)
+
+
+class Camera3D(_Helpful):
+    """Where the viewer is. Set pos, target and fov (degrees) yourself every frame, or use look() / orbit(). Everything is a function of time t."""
+
+    def __init__(self):
+        self.pos, self.target, self.fov = (0.0, 2.0, -8.0), (0.0, 1.0, 0.0), 55.0
+
+    def look(self, pos, target, fov=None):
+        self.pos, self.target = tuple(float(v) for v in pos), tuple(float(v) for v in target)
+        if fov:
+            self.fov = float(fov)
+        return self
+
+    def orbit(self, center, radius, height, angle_deg, fov=None):
+        """Circle around center at a distance and height; angle in degrees (0 = on the -z side, 90 = on the +x side)."""
+        a = math.radians(angle_deg - 90.0)
+        return self.look((center[0] + radius * math.cos(a), center[1] + height, center[2] + radius * math.sin(a)), center, fov)
+
+    def shake(self, amount, t):
+        """Add a small hand-held tremble (amount in metres)."""
+        n = lambda s: noise(t * 22.0, s)
+        self.pos = (self.pos[0] + n(1) * amount, self.pos[1] + n(2) * amount, self.pos[2] + n(3) * amount)
+        return self
+
+
+class Node3D(_Helpful):
+    """A solid object: set pos (x, y, z), rot (degrees about x, y, z), scale, color, visible every frame (inside the animate function) to move it."""
+
+    def __init__(self, mesh, color, pos, rot, scale, shadow, name):
+        self.mesh, self.color, self.pos, self.rot, self.scale, self.shadow, self.name, self.visible = mesh, color, tuple(pos), tuple(rot), scale, shadow, name, True
+        self.radius = max(max(abs(a) for a in v) for v in mesh[0])
+
+
+class Figure3D(_Helpful):
+    """A 3D stick figure. Give it a pose each frame: set_pose("aim"), play("jab", t_local), gait("zombie", phase), or your own define_pose / define_move names.
+    pos = feet position, yaw = degrees (0 faces +x, 90 faces +z, 180 faces -x), scale = size."""
+
+    def __init__(self, color="#4aa3ff", pos=(0.0, 0.0, 0.0), yaw=0.0, scale=1.0, name="", shadow=True, accent="#ffffff", head_color=None):
+        self.color, self.pos, self.yaw, self.scale, self.name, self.shadow, self.accent, self.visible = color, tuple(pos), float(yaw), float(scale), name, shadow, accent, True
+        self.head_color = head_color
+        self.pose = resolve_pose("idle")
+        self._st = Stick("fig", color)
+
+    def set_pose(self, pose):
+        self.pose = resolve_pose(pose) if isinstance(pose, str) or "y" not in pose else pose
+        return self
+
+    def play(self, move, t_local):
+        """Pose the figure as the move `move` (any name in moves()) is at t_local seconds into it."""
+        if move not in MOVES:
+            raise _unknown("move", move, MOVES, "Invent one with define_move (video_api topic: moves).")
+        return self.set_pose(MOVES[move].pose_at(t_local))
+
+    def gait(self, style, phase):
+        return self.set_pose(_gait_pose(style, phase))
+
+    def _joints(self):
+        J = self._st.joints(0.0, 0.0, 1, self.pose)
+        k = 0.0104 * self.scale
+        out = {}
+        for name, (x, y) in J.items():
+            side = -1.0 if name.endswith("_l") else 1.0 if name.endswith("_r") else 0.0
+            out[name] = (x * k, -y * k, side * 0.12 * self.scale)
+        return out, k
+
+    def _parts(self):
+        """[(vertices, faces, centre, colour)] in world space for the current pose."""
+        J, k = self._joints()
+        sc = self.scale
+        dark = shade(self.color, -0.3)
+        segs = [(J["hip"], J["chest"], 0.105 * sc, 0.12 * sc, self.color)]
+        for s in ("l", "r"):
+            col = dark if s == "l" else self.color
+            segs += [(J["chest"], J["elbow_" + s], 0.045 * sc, 0.04 * sc, col), (J["elbow_" + s], J["hand_" + s], 0.04 * sc, 0.035 * sc, col),
+                     (J["hip"], J["knee_" + s], 0.07 * sc, 0.055 * sc, col), (J["knee_" + s], J["foot_" + s], 0.055 * sc, 0.045 * sc, col),
+                     (J["foot_" + s], J["toe_" + s], 0.05 * sc, 0.04 * sc, dark if s == "l" else shade(self.color, -0.15))]
+        parts = []
+        for (a, b, r0, r1, col) in segs:
+            v, f, c = _prism(a, b, r0, r1)
+            parts.append((v, f, c, col))
+        hv, hf = _mesh_sphere(0.115 * sc, 8, 5)
+        hc = J["head"]
+        parts.append(([(x + hc[0], y + hc[1], z + hc[2]) for (x, y, z) in hv], hf, hc, self.head_color or shade(self.color, 0.25)))
+        for s in ("l", "r"):                                                     # hands in the accent colour (gloves)
+            gv, gf = _mesh_sphere(0.05 * sc, 6, 4)
+            g = J["hand_" + s]
+            parts.append(([(x + g[0], y + g[1], z + g[2]) for (x, y, z) in gv], gf, g, self.accent))
+        cy, sy = math.cos(math.radians(self.yaw)), math.sin(math.radians(self.yaw))
+        out = []
+        for (v, f, c, col) in parts:
+            wv = [(x * cy - z * sy + self.pos[0], y + self.pos[1], x * sy + z * cy + self.pos[2]) for (x, y, z) in v]
+            cw = (c[0] * cy - c[2] * sy + self.pos[0], c[1] + self.pos[1], c[0] * sy + c[2] * cy + self.pos[2])
+            out.append((wv, f, cw, col))
+        return out
+
+
+class Scene3D(_Helpful):
+    """A 3D scene for a Video (v.add(world)). Everything is a function of time: put your movement in world.animate = function(world, t) that sets node and
+    camera positions for that instant. Painter's algorithm (far to near) with flat lighting, fog and blob shadows: think low-poly. It is heavy: use
+    Video(1280, 720, fps=30), try quality="draft" first and keep scenes to a few hundred shapes.
+        world = Scene3D(duration=8, sky=("#6fa8ff", "#dff0ff"), ground="#4b8b4f")
+        cube = world.box(1.5, 1.5, 1.5, color="#ff6b6b", pos=(-2, 0.75, 4))
+        hero = world.person(color="#4aa3ff", pos=(1, 0, 4), yaw=180)
+        def animate(w, t):
+            cube.rot = (0, t * 50, 0)
+            hero.play("wave", t % 1.4)
+            w.camera.orbit((0, 1, 4), radius=9, height=3, angle_deg=t * 25)
+        world.animate = animate
+        v = Video(1280, 720, fps=30); v.add(world); v.render()
+    """
+
+    def __init__(self, duration=8.0, sky=("#6fa8ff", "#dff0ff"), ground="#4b8b4f", fog=0.018, light=(-0.45, 1.0, -0.35), grid="#3f7a43", grid_step=2.0,
+                 ambient=0.52, outline=True, width=1280, height=720, title=None, music=None):
+        self._dur = float(duration)
+        self.sky, self.ground, self.fog, self.grid, self.grid_step, self.ambient, self.outline, self.title, self.music = sky, ground, fog, grid, grid_step, ambient, outline, title, music
+        self.light = _vnorm(light)
+        self.W, self.H = width, height
+        self.camera = Camera3D()
+        self.nodes, self.people, self._sounds = [], [], []
+        self.animate = None
+        self.overlay = None
+        self._labels, self._glows, self._basis = [], [], None
+        self.stage_kind = None
+
+    @property
+    def duration(self):
+        return self._dur
+
+    @property
+    def end(self):
+        return getattr(self, "start", 0.0) + self._dur
+
+    # ---- building the world ----
+    def _node(self, mesh, color, pos, rot, shadow, name, scale=1.0):
+        n = Node3D(mesh, color, pos, rot, scale, shadow, name)
+        self.nodes.append(n)
+        return n
+
+    def box(self, w=1.0, h=1.0, d=1.0, color="#cccccc", pos=(0, 0, 0), rot=(0, 0, 0), shadow=False, name=""):
+        """A box w wide (x), h tall (y), d deep (z), centred at pos (its middle, so pos y = h/2 stands it on the ground)."""
+        return self._node(_mesh_box(w, h, d), color, pos, rot, shadow, name)
+
+    def sphere(self, r=0.5, color="#ffd166", pos=(0, 0, 0), rot=(0, 0, 0), shadow=True, name="", detail=1):
+        return self._node(_mesh_sphere(r, 8 + 2 * detail, 5 + detail), color, pos, rot, shadow, name)
+
+    def cylinder(self, r=0.5, h=1.0, color="#cccccc", pos=(0, 0, 0), rot=(0, 0, 0), shadow=False, name="", sides=12):
+        return self._node(_mesh_cyl(r, h, sides), color, pos, rot, shadow, name)
+
+    def cone(self, r=0.5, h=1.0, color="#3d8b4f", pos=(0, 0, 0), rot=(0, 0, 0), shadow=False, name="", sides=10):
+        return self._node(_mesh_cyl(r, h, sides, 0.001), color, pos, rot, shadow, name)
+
+    def person(self, color="#4aa3ff", pos=(0.0, 0.0, 0.0), yaw=0.0, scale=1.0, name="", accent="#ffffff", shadow=True):
+        p = Figure3D(color, pos, yaw, scale, name, shadow, accent)
+        self.people.append(p)
+        return p
+
+    def label(self, text, pos, size=30, color="#ffffff"):
+        """Text that floats at a 3D point (call it inside animate; it lasts one frame)."""
+        self._labels.append((text, pos, size, color))
+
+    def glow3d(self, pos, radius, color="#ffd166", strength=1.0):
+        """A soft light blob at a 3D point (muzzle flash, spark, lamp) for one frame; radius in metres."""
+        self._glows.append((pos, radius, color, strength))
+
+    def sound(self, at, buf, vol=1.0, pan=0.0):
+        self._sounds.append((at, buf, vol, pan))
+
+    def project(self, p):
+        """Screen position (x, y, depth) of a world point in the frame being drawn, or None when it is behind the camera."""
+        if self._basis is None:
+            return None
+        cp, r, u, f, focal = self._basis
+        d = _vsub(p, cp)
+        X, Y, Z = _vdot(d, r), _vdot(d, u), _vdot(d, f)
+        if Z < 0.1:
+            return None
+        return (self.W / 2.0 + X * focal / Z, self.H / 2.0 - Y * focal / Z, Z)
+
+    def on_add(self, video):
+        base = getattr(self, "start", 0.0)
+        for (t, buf, vol, pan) in self._sounds:
+            video.sound(buf, base + t, vol, pan)
+        if self.music:
+            style = self.music if self.music in _Music.STYLES else "chill"
+            bpm = {"fight": 128, "epic": 100, "8bit": 140, "chill": 90}[style]
+            video.sound(music.beat(bpm, int(math.ceil(self._dur / (4 * 60.0 / bpm))), style, vol=0.9), base, 0.3)
+
+    # ---- drawing ----
+    def draw(self, c, t):
+        self._labels, self._glows = [], []
+        if self.animate is not None:
+            self.animate(self, t)
+        W, H = float(self.W), float(self.H)
+        cam = self.camera
+        cp = cam.pos
+        f = _vnorm(_vsub(cam.target, cp))
+        r = _vnorm(_vcross((0.0, 1.0, 0.0), f)) if abs(f[1]) < 0.999 else (1.0, 0.0, 0.0)
+        u = _vcross(f, r)
+        focal = (H / 2.0) / math.tan(math.radians(clamp(cam.fov, 10.0, 120.0)) / 2.0)
+        self._basis = (cp, r, u, f, focal)
+        fogc = rgb(self.sky[1])
+        L, amb = self.light, self.ambient
+        near = 0.1
+        fogd = self.fog
+        with c.screen():
+            # sky and ground: the horizon is where the horizontal plane meets the camera's view
+            hd = _vnorm((f[0], 0.0, f[2])) if abs(f[0]) + abs(f[2]) > 1e-6 else (0.0, 0.0, 1.0)
+            zz = _vdot(hd, f)
+            hy = H / 2.0 - focal * _vdot(hd, u) / zz if zz > 1e-3 else (-1e4 if f[1] > 0 else 1e4)
+            hy = clamp(hy, -50.0, H + 50.0)
+            n = 28
+            for i in range(n):
+                y0, y1 = hy * i / n, hy * (i + 1) / n
+                if y1 > 0:
+                    c.rect(0, y0, W, y1 - y0 + 1.5, fill=mix(self.sky[0], self.sky[1], (i / float(n - 1)) ** 1.4), anchor="tl")
+            if hy < H:
+                c.rect(0, hy, W, H - hy + 1, fill=self.ground, anchor="tl")
+                for i in range(14):                                                    # haze where the ground meets the sky
+                    c.rect(0, hy + i * 7, W, 8, fill=fogc, anchor="tl", alpha=0.75 * (1 - i / 14.0) ** 1.6)
+            if self.grid:
+                self._grid(c, cp, r, u, f, focal, fogc, near)
+            # shadows
+            for obj in self.nodes + self.people:
+                if getattr(obj, "shadow", False) and obj.visible:
+                    ox, oz = obj.pos[0], obj.pos[2]
+                    pr = self.project((ox, 0.0, oz))
+                    if pr:
+                        rad = (obj.radius * obj.scale if isinstance(obj, Node3D) else 0.45 * obj.scale) * 1.05
+                        dx, dy, dz = ox - cp[0], 0.0 - cp[1], oz - cp[2]
+                        dl = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
+                        rx = rad * focal / pr[2]
+                        c.ellipse(pr[0], pr[1], rx, max(2.0, rx * clamp(abs(dy) / dl, 0.1, 1.0)), fill="#000000", alpha=0.28 * clamp(1.0 - pr[2] * fogd * 0.8))
+            # solid faces
+            polys = []
+
+            def emit(wv, faces, ctr, color, double=False):
+                base = rgb(color)
+                cam_v = []
+                for p in wv:
+                    d0, d1, d2 = p[0] - cp[0], p[1] - cp[1], p[2] - cp[2]
+                    cam_v.append((d0 * r[0] + d1 * r[1] + d2 * r[2], d0 * u[0] + d1 * u[1] + d2 * u[2], d0 * f[0] + d1 * f[1] + d2 * f[2]))
+                for fc in faces:
+                    pts = [wv[i] for i in fc]
+                    if len(pts) >= 4:
+                        nrm = _vcross(_vsub(pts[2], pts[0]), _vsub(pts[3], pts[1]))
+                    else:
+                        nrm = _vcross(_vsub(pts[1], pts[0]), _vsub(pts[2], pts[0]))
+                    cen = (sum(q[0] for q in pts) / len(pts), sum(q[1] for q in pts) / len(pts), sum(q[2] for q in pts) / len(pts))
+                    if not double and _vdot(nrm, _vsub(cen, ctr)) < 0:
+                        nrm = (-nrm[0], -nrm[1], -nrm[2])
+                    to_cam = _vsub(cp, cen)
+                    if _vdot(nrm, to_cam) <= 0:
+                        if not double:
+                            continue
+                        nrm = (-nrm[0], -nrm[1], -nrm[2])
+                    nl = _vnorm(nrm)
+                    lit = amb + (1.0 - amb) * max(0.0, _vdot(nl, L)) + 0.12 * nl[1]
+                    poly = [cam_v[i] for i in fc]
+                    clipped = []
+                    for k in range(len(poly)):
+                        a, b = poly[k], poly[(k + 1) % len(poly)]
+                        ia, ib = a[2] >= near, b[2] >= near
+                        if ia:
+                            clipped.append(a)
+                        if ia != ib:
+                            tt = (near - a[2]) / (b[2] - a[2])
+                            clipped.append((a[0] + (b[0] - a[0]) * tt, a[1] + (b[1] - a[1]) * tt, near))
+                    if len(clipped) < 3:
+                        continue
+                    depth = sum(q[2] for q in clipped) / len(clipped)
+                    sp = [(W / 2.0 + q[0] * focal / q[2], H / 2.0 - q[1] * focal / q[2]) for q in clipped]
+                    xs, ys = [q[0] for q in sp], [q[1] for q in sp]
+                    if max(xs) < -20 or min(xs) > W + 20 or max(ys) < -20 or min(ys) > H + 20:
+                        continue
+                    fogf = 1.0 - math.exp(-fogd * depth)
+                    col = tuple(int(clamp(base[j] * lit, 0, 255) * (1 - fogf) + fogc[j] * fogf) for j in range(3))
+                    polys.append((depth, sp, col))
+            for nd in self.nodes:
+                if not nd.visible:
+                    continue
+                s3 = nd.scale if isinstance(nd.scale, (tuple, list)) else (nd.scale,) * 3
+                wv = []
+                for (x, y, z) in nd.mesh[0]:
+                    q = _rot3((x * s3[0], y * s3[1], z * s3[2]), nd.rot[0], nd.rot[1], nd.rot[2])
+                    wv.append((q[0] + nd.pos[0], q[1] + nd.pos[1], q[2] + nd.pos[2]))
+                emit(wv, nd.mesh[1], nd.pos, nd.color)
+            for pr_ in self.people:
+                if pr_.visible:
+                    for (wv, faces, ctr, col) in pr_._parts():
+                        emit(wv, faces, ctr, col)
+            polys.sort(key=lambda q: -q[0])
+            for (depth, sp, col) in polys:
+                c.poly(sp, fill=col, outline=tuple(int(v * 0.62) for v in col) if self.outline else None, width=1)
+            for (pos, rad, color, strength) in self._glows:
+                p = self.project(pos)
+                if p:
+                    c.glow(p[0], p[1], max(4.0, rad * focal / p[2]), color, strength)
+            for (text, pos, size, color) in self._labels:
+                p = self.project(pos)
+                if p:
+                    c.text(text, p[0], p[1], max(12, size * clamp(8.0 / p[2], 0.5, 1.6)), color, outline="#000000", outline_w=3)
+            if self.title:
+                c.text(self.title, W / 2, 34, 28, "#ffffff", outline="#000000", outline_w=3, alpha=0.85)
+            if self.overlay is not None:
+                self.overlay(c, t)
+
+    def _grid(self, c, cp, r, u, f, focal, fogc, near):
+        step = self.grid_step
+        gx, gz = round(cp[0] / step) * step, round(cp[2] / step) * step
+        span = 22
+        gc = rgb(self.grid)
+
+        def seg(a, b):
+            ca = (_vdot(_vsub(a, cp), r), _vdot(_vsub(a, cp), u), _vdot(_vsub(a, cp), f))
+            cb = (_vdot(_vsub(b, cp), r), _vdot(_vsub(b, cp), u), _vdot(_vsub(b, cp), f))
+            if ca[2] < near and cb[2] < near:
+                return
+            if ca[2] < near:
+                tt = (near - ca[2]) / (cb[2] - ca[2])
+                ca = (ca[0] + (cb[0] - ca[0]) * tt, ca[1] + (cb[1] - ca[1]) * tt, near)
+            elif cb[2] < near:
+                tt = (near - cb[2]) / (ca[2] - cb[2])
+                cb = (cb[0] + (ca[0] - cb[0]) * tt, cb[1] + (ca[1] - cb[1]) * tt, near)
+            fogf = 1.0 - math.exp(-self.fog * 0.5 * (ca[2] + cb[2]))
+            col = tuple(int(gc[j] * (1 - fogf) + fogc[j] * fogf) for j in range(3))
+            c.line(self.W / 2.0 + ca[0] * focal / ca[2], self.H / 2.0 - ca[1] * focal / ca[2], self.W / 2.0 + cb[0] * focal / cb[2], self.H / 2.0 - cb[1] * focal / cb[2], col, 1.5)
+        for i in range(-span, span + 1):
+            seg((gx + i * step, 0.0, gz - span * step), (gx + i * step, 0.0, gz + span * step))
+            seg((gx - span * step, 0.0, gz + i * step), (gx + span * step, 0.0, gz + i * step))
+
+    # ---- a ready-made 3D version of a 2D Fight ----
+    @classmethod
+    def from_fight(cls, fight, **kw):
+        """Show a Fight in 3D: the same choreography, hits, health bars and captions, with a moving camera. world = Scene3D.from_fight(fight)."""
+        fight._compile()
+        kind = getattr(fight.stage, "kind", "dojo")
+        look = {"dojo": dict(sky=("#2b1f3a", "#9a6b5c"), ground="#8a5a33", grid="#6f4726", fog=0.03),
+                "city_night": dict(sky=("#080b24", "#4a2f7a"), ground="#262a35", grid="#394057", fog=0.025),
+                "sunset": dict(sky=("#3a2a6a", "#ff9a5a"), ground="#b98a54", grid="#a07840", fog=0.02),
+                "arena": dict(sky=("#10131f", "#3a4466"), ground="#3b3f52", grid="#4b5068", fog=0.022),
+                "forest": dict(sky=("#6fa8ff", "#e6f4d8"), ground="#3f7a43", grid="#356a39", fog=0.025),
+                "plain": dict(sky=("#6fa8ff", "#dff0ff"), ground="#59a05c", grid="#4a8a4d", fog=0.02)}[kind]
+        look.update(kw)
+        w = cls(duration=fight.duration, title=getattr(fight, "title", None), **look)
+        w.stage_kind = kind
+        rnd = random.Random(7)
+        if kind == "city_night":
+            for i in range(26):
+                x = -18 + i * 1.5
+                h = rnd.uniform(3, 11)
+                w.box(1.3, h, 1.3, color=rnd.choice(["#141a3a", "#1a2250", "#241a4a", "#0f1630"]), pos=(x, h / 2, 9 + rnd.uniform(0, 3)))
+            for i in range(5):
+                w.box(1.2, 0.5, 0.1, color=rnd.choice(["#ff3fa4", "#2de2ff", "#ffe14a"]), pos=(-8 + i * 4, 3 + rnd.uniform(0, 2), 8.2))
+        elif kind == "dojo":
+            w.box(26, 6, 0.4, color="#e8dcc2", pos=(0, 3, 6))
+            w.box(3, 3.2, 0.1, color="#b3202a", pos=(0, 3.2, 5.7))
+            for i in range(7):
+                w.cylinder(0.22, 6, color="#5a3a1e", pos=(-9 + i * 3, 3, 5.4))
+            for i in range(3):
+                w.sphere(0.35, color="#ff6a3d", pos=(-6 + i * 6, 5, 5.2), shadow=False)
+        elif kind == "arena":
+            w.cylinder(6.5, 0.3, color="#555a70", pos=(0, 0.15, 0), sides=24)
+            for i in range(4):
+                a = math.pi / 4 + i * math.pi / 2
+                w.cylinder(0.12, 1.5, color="#c0c4d8", pos=(5.6 * math.cos(a), 0.9, 5.6 * math.sin(a)))
+            for i in range(30):
+                a = i * 2 * math.pi / 30
+                w.box(0.8, 0.9 + rnd.uniform(0, 0.5), 0.5, color=rnd.choice(["#222733", "#2f3548", "#3a2f48"]), pos=(11 * math.cos(a), 0.6, 11 * math.sin(a)))
+        elif kind == "forest":
+            for i in range(14):
+                x = -14 + i * 2.2
+                z = 6 + rnd.uniform(0, 4)
+                w.cylinder(0.25, 1.4, color="#5a3a1e", pos=(x, 0.7, z))
+                w.cone(1.2, 3.2, color=rnd.choice(["#2f6b3a", "#3a7d44", "#2a5e34"]), pos=(x, 2.9, z))
+        elif kind == "sunset":
+            for i in range(6):
+                w.sphere(0.8 + rnd.uniform(0, 0.8), color="#8a6a44", pos=(-10 + i * 4, 0.5, 6 + rnd.uniform(0, 3)), shadow=False)
+        w.fight = fight
+        w.people = [w.person(color=fight.f[i].color, name=fight.f[i].name, scale=fight.f[i].scale, accent=(fight.f[i].gloves or "#ffffff")) for i in (0, 1)]
+        K = 0.0104
+        mx = lambda x: (x - fight.W / 2.0) * 0.0108
+
+        def animate(world, t):
+            s = fight._warp.sim(t)
+            xs = []
+            for i in (0, 1):
+                pose, what = fight._pose(i, s)
+                x = fight._x_at(i, s) + fight._off(i, s)
+                fc = fight._facing(i, s)
+                p = world.people[i]
+                p.set_pose(pose)
+                p.pos = (mx(x), 0.0, 0.0)
+                p.yaw = 0.0 if fc > 0 else 180.0
+                xs.append(mx(x))
+            mid = (xs[0] + xs[1]) / 2.0
+            gap = abs(xs[1] - xs[0])
+            zoom = 1.0
+            for (t0, dur, amt) in fight._zooms:
+                vv = t - fight._warp.vid(t0)
+                if 0 <= vv < dur:
+                    zoom *= 1.0 + amt * math.sin(math.pi * vv / dur) ** 1.5
+            ang = 8.0 + 38.0 * math.sin(t * 0.42) + 10.0 * math.sin(t * 0.9 + 1.0)
+            rad = (4.1 + gap * 0.5) / zoom
+            world.camera.orbit((mid, 1.0, 0.0), rad, 1.1 + gap * 0.1, ang, fov=50.0)
+            sh = 0.0
+            for (ts, amp) in fight._shakes:
+                vv = t - fight._warp.vid(ts)
+                if 0 <= vv < 0.5:
+                    sh += amp * math.exp(-vv * 9.0)
+            world.camera.shake(min(sh, 26.0) * 0.012, t)
+
+        def overlay(c, t):
+            s = fight._warp.sim(t)
+            for fx in fight._fx:
+                e = t - fight._warp.vid(fx["s"])
+                if e < 0:
+                    continue
+                if fx["kind"] in ("spark", "block") and e < 0.22:
+                    world_pt = (mx(fx["x"]), (fight.ground - fx["y"]) * K, -0.1)
+                    p = w.project(world_pt)
+                    if p:
+                        u = e / 0.22
+                        c.glow(p[0], p[1], 70 * (1 - u * 0.5) * (1.4 if fx.get("heavy") else 1.0) * 8.0 / p[2], "#ffe9a8" if fx["kind"] == "spark" else "#bfe3ff", 1.0 - u)
+                elif fx["kind"] == "ring" and e < 0.5:
+                    p = w.project((mx(fx["x"]), (fight.ground - fx["y"]) * K, -0.1))
+                    if p:
+                        c.circle(p[0], p[1], 260 * ease(e / 0.5, "out_cubic") * 8.0 / p[2], outline="#ffffff", width=5, alpha=1 - e / 0.5)
+                elif fx["kind"] == "dust" and e < 0.8:
+                    p = w.project((mx(fx["x"]), 0.15, 0.0))
+                    if p:
+                        u = e / 0.8
+                        for j in range(6):
+                            c.circle(p[0] + (j - 2.5) * 34 * u * 8.0 / p[2], p[1] - 24 * u * (1 + j % 3) * 8.0 / p[2], (20 * (1 - u * 0.5) + 4) * 8.0 / p[2], fill="#d8c6a6", alpha=0.7 * (1 - u))
+                elif fx["kind"] == "flash" and e < 0.12:
+                    c.rect(0, 0, c.W, c.H, fill="#ffffff", anchor="tl", alpha=0.6 * (1 - e / 0.12))
+            for pp in fight._popups:
+                e = t - fight._warp.vid(pp["s"])
+                if 0 <= e < 0.9:
+                    p = w.project((mx(pp["x"]), (fight.ground - pp["y"]) * K + 0.5 + e * 0.8, -0.1))
+                    if p:
+                        c.text(pp["text"], p[0], p[1], 54 if pp["heavy"] else 40, "#ffd166" if pp["heavy"] else "#ffffff", outline="#000000", outline_w=4, alpha=clamp(1.6 - e / 0.6))
+            if fight.hud:
+                fight._draw_hud(c, t, s)
+            for tx in fight._texts:
+                fight._draw_text(c, tx, s, t)
+        w.animate, w.overlay = animate, overlay
+        # sounds and music come from the fight itself
+        for (s_, buf, vol, pan) in fight._sounds:
+            w._sounds.append((fight._warp.vid(s_), buf, vol, pan))
+        if fight.music:
+            w.music = fight.music
+        return w
+
+
+
+# ======================================================================================
+# catalog: the real names, generated from the live library (so it is never out of date). Used by `python lumovideo.py --api [topic]` and the video_api tool.
+# ======================================================================================
+API_TOPICS = ("overview", "recipes", "moves", "poses", "actor", "show", "fight", "scene3d", "canvas", "video", "sound", "stages", "easing", "components")
+
+_RECIPES = {
+    "slideshow": """# slides with a title and a line, cross-faded (use c.image(path, ...) for photos: see the canvas topic)
+from lumovideo import *
+SLIDES = [("Beach day", "Sun, sand and friends", "#ff9f4a"), ("Mountain trip", "Fresh air at 2000 m", "#4aa3ff"), ("Home again", "See you next time", "#7fb069")]
+v = Video(1280, 720)
+for title, sub, col in SLIDES:
+    def draw(c, t, title=title, sub=sub, col=col):
+        c.background("#101626", col)
+        k = ease(t / 0.8, "out_cubic")
+        c.circle(640, 360, 260 * k, fill=col, alpha=0.25)
+        c.text(title, 640, 300, 96, "white", outline="#000000", outline_w=6, scale=ease(t / 0.6, "out_back"))
+        c.text(sub, 640, 430, 44, "#e6e6e6", alpha=ease((t - 0.4) / 0.5, "out_quad"))
+    v.scene(3.5, draw, fade_in=0.4, fade_out=0.4)
+v.sfx("whoosh", 0.1)
+v.render()
+""",
+    "logo_reveal": """# a logo or product name that bursts in: rings, a glow and sparkle lines
+import math
+from lumovideo import *
+v = Video(1280, 720)
+def draw(c, t):
+    c.background("#0b1030", "#2b1b5a")
+    for i in range(3):
+        k = clamp((t - i * 0.25) / 1.2)
+        c.circle(640, 360, 40 + 420 * ease(k, "out_cubic"), outline="#7aa2ff", width=4, alpha=1 - k)
+    c.glow(640, 360, 220 * ease(t / 1.0, "out_cubic"), "#4aa3ff", 0.8)
+    for j in range(12):
+        a = j * math.pi / 6
+        r = 150 + 90 * ease((t - 0.5) / 0.6, "out_quad")
+        c.line(640 + math.cos(a) * r, 360 + math.sin(a) * r, 640 + math.cos(a) * (r + 40), 360 + math.sin(a) * (r + 40), "#ffffff", 3)
+    c.text("NOVA", 640, 360, 150, "white", outline="#000000", outline_w=8, scale=ease((t - 0.3) / 0.6, "out_back"))
+    c.text("something new is coming", 640, 480, 40, "#cfe0ff", alpha=ease((t - 1.2) / 0.6, "out_quad"))
+v.scene(4.0, draw, fade_out=0.4)
+v.sfx("boom", 0.3)
+v.sfx("riser", 0.0)
+v.render()
+""",
+    "road_trip": """# your own animation from shapes: a car drives past a scrolling skyline, the sun rises (everything is a function of t)
+import math
+from lumovideo import *
+v = Video(1280, 720)
+def draw(c, t):
+    k = ease(t / 6.0, "in_out_sine")
+    c.background(mix("#1b2350", "#ff9a5a", k), mix("#3a2a6a", "#ffe2a8", k))
+    c.circle(900, 520 - 300 * k, 70, fill="#fff1b8")
+    for i in range(14):
+        x = (i * 120 - t * 60) % 1500 - 100
+        c.rect(x, 520, 90, 60 + (i * 37) % 140, fill="#161a33", anchor="bl")
+    c.rect(0, 520, 1280, 200, fill="#2b2f3a", anchor="tl")
+    c.line(0, 620, 1280, 620, "#ffd166", 6)
+    x = -200 + 1700 * ease(t / 6.0, "in_out_sine")
+    bounce = math.sin(t * 18) * 2
+    c.rect(x, 565 + bounce, 200, 50, fill="#ff5a5a", radius=12, anchor="tl")
+    c.rect(x + 40, 525 + bounce, 110, 44, fill="#ff7a7a", radius=12, anchor="tl")
+    for wx in (x + 45, x + 155):
+        c.circle(wx, 618 + bounce, 24, fill="#111111")
+        c.circle(wx, 618 + bounce, 10, fill="#999999")
+v.scene(6.0, draw)
+v.sfx("engine", 0.0, vol=0.5, dur=5.0)
+v.render()
+""",
+    "actor_scene": """# characters in a scene with your own pose and move (Actor + Show)
+from lumovideo import *
+define_pose("hands_up", "guard", rua=165, rfa=175, lua=165, lfa=175)
+define_move("hooray", [(0, "guard"), (0.25, "hands_up", "out_quad"), (0.9, "hands_up"), (1.2, "guard")])
+ana = Actor("Ana", "#4aa3ff", x=120)
+bo = Actor("Bo", "#ff9f4a", x=1100, facing=-1)
+ana.walk(0.3, to=500, dur=2.0)
+bo.walk(0.3, to=780, dur=2.0)
+ana.say(2.5, "We did it!", dur=1.6)
+ana.play(2.6, "hooray")
+bo.play(3.2, "cheer")
+show = Show("sunset", [ana, bo], title="Party", duration=6.0)
+v = Video(1280, 720)
+v.add(show)
+v.render()
+""",
+    "world_3d": """# a 3D scene: shapes, a figure that acts, a camera that circles (Scene3D)
+import math
+from lumovideo import *
+world = Scene3D(duration=6, sky=("#6fa8ff", "#dff0ff"), ground="#4b8b4f")
+cube = world.box(1.5, 1.5, 1.5, color="#ff6b6b", pos=(-2.5, 0.75, 4))
+ball = world.sphere(0.7, color="#ffd166", pos=(2.5, 0.7, 4))
+hero = world.person(color="#4aa3ff", pos=(0, 0, 4), yaw=-90)
+def animate(w, t):
+    cube.rot = (0, t * 50, 0)
+    ball.pos = (2.5, 0.7 + abs(math.sin(t * 3)) * 1.2, 4)
+    hero.play("wave", t % 1.4)
+    w.camera.orbit((0, 1, 4), radius=9, height=3, angle_deg=t * 25)
+world.animate = animate
+v = Video(1280, 720, fps=30)
+v.add(world)
+v.render()
+""",
+}
+
+
+def _doc1(obj):
+    d = (inspect.getdoc(obj) or "").strip().split("\n")[0]
+    return d[:120]
+
+
+def _api_methods(cls, skip=()):
+    rows = []
+    for n in sorted(x for x in dir(cls) if not x.startswith("_") and x not in skip):
+        a = getattr(cls, n)
+        if isinstance(a, property):
+            rows.append("  .%s  (property) %s" % (n, _doc1(a.fget)))
+            continue
+        if not callable(a):
+            continue
+        try:
+            sig = str(inspect.signature(a)).replace("(self, ", "(").replace("(self)", "()")
+        except (TypeError, ValueError):
+            sig = "(...)"
+        rows.append("  %s%s  %s" % (n, sig, _doc1(a)))
+    return "\n".join(rows)
+
+
+def _wrap(names, width=100):
+    lines, cur = [], ""
+    for n in names:
+        if len(cur) + len(n) + 1 > width:
+            lines.append(cur)
+            cur = ""
+        cur += (" " if cur else "") + n
+    return "\n".join(lines + ([cur] if cur else []))
+
+
+def catalog(topic=None):
+    """The real names and signatures of the library, as plain text. catalog() lists the topics; catalog("moves") etc. gives one topic."""
+    t = (topic or "").strip().lower()
+    if t in ("", "topics", "list"):
+        return "lumovideo %s. Topics (ask for one before you use names from it; never guess a name): %s" % (__version__, ", ".join(API_TOPICS))
+    if t not in API_TOPICS:
+        raise _unknown("api topic", t, API_TOPICS)
+    if t == "overview":
+        return ("lumovideo %s: everything for making videos with Python (Pillow draws, ffmpeg encodes). ANY video can be built; templates are only starting points.\n"
+                "Pick the building block by what the video needs:\n"
+                "- text, shapes, images, charts, particles, slideshows, explainers, promos, tutorials, lyrics, trailers: Video + v.scene(duration, draw) with Canvas (topics canvas, components, recipes)\n"
+                "- characters that walk, talk, gesture, shoot, fall, in any scene: Actor + Show (actor, show); your own animations: define_pose and define_move (moves, poses)\n"
+                "- stickman fights (automatic or scripted): Fight (fight)\n"
+                "- real 3D (camera moves, 3D figures with the same poses, shapes): Scene3D (scene3d)\n"
+                "- sound: v.sfx(\"punch\", 1.5), sfx.*, sfx.file, sfx.net, music.beat (sound)\n"
+                "Rules: coordinates are always 1280x720; every drawing is a pure function of t (no state kept between frames); leave fps to the quality (60); render once, fix only real warnings.\n"
+                "Topics: %s" % (__version__, ", ".join(API_TOPICS)))
+    if t == "recipes":
+        return "Complete small scripts that run as they are (change the content, keep the structure):\n\n" + "\n".join("### %s\n%s" % (k, v) for k, v in _RECIPES.items())
+    if t == "moves":
+        att = ["  %-16s %.2fs  hit at %.2fs  reach %-4s dmg %-3s %-5s %s" % (n, m.dur, m.hit, m.reach, m.dmg, m.kind, m.limb) for n, m in sorted(MOVES.items()) if m.hit]
+        act = [n for n, m in sorted(MOVES.items()) if not m.hit]
+        return ("ATTACKS (Fight.attack(who, name, at=...), Actor.play):\n" + "\n".join(att) + "\nANIMATIONS (Actor.play(at, name), Figure3D.play(name, t)):\n" + _wrap(act) +
+                "\nMAKE YOUR OWN (they work everywhere a name is accepted):\n" + _doc1(define_pose) + "\n  " + inspect.getdoc(define_move).replace("\n", "\n  ") + "\n")
+    if t == "poses":
+        return ("POSES (%d): %s\nANGLES for define_pose(name, base, **angles): %s\n%s" % (len(POSES), _wrap(sorted(POSES), 96), "; ".join("%s = %s" % kv for kv in POSE_ANGLES.items()),
+                                                                                     inspect.getdoc(define_pose)))
+    if t == "actor":
+        return ("%s\nGAITS: %s\n%s" % (inspect.getdoc(Actor), ", ".join(GAITS), _api_methods(Actor)))
+    if t == "show":
+        return "%s\n%s" % (inspect.getdoc(Show), _api_methods(Show))
+    if t == "fight":
+        return "%s\nStick(name, color, headband=, gloves=, belt=, weapon=, scale=)\n%s" % (inspect.getdoc(Fight), _api_methods(Fight))
+    if t == "scene3d":
+        return ("%s\nPrimitives: box, sphere, cylinder, cone (nodes with .pos .rot .scale .color .visible), person (Figure3D: set_pose, play, gait, .pos .yaw .scale).\n%s\nCamera3D:\n%s\nFigure3D:\n%s" % (
+            inspect.getdoc(Scene3D), _api_methods(Scene3D), _api_methods(Camera3D), _api_methods(Figure3D)))
+    if t == "canvas":
+        return "Canvas (the `c` in draw(c, t); drawing is in 1280x720 coordinates):\n" + _api_methods(Canvas)
+    if t == "video":
+        return "%s\nQUALITY presets: %s\n%s\nVideo:\n%s" % (inspect.getdoc(Video), ", ".join("%s=%dx%d@%dfps" % (k, 1280 * v["scale"], 720 * v["scale"], v["fps"]) for k, v in QUALITY.items()), "", _api_methods(Video))
+    if t == "sound":
+        return ("SOUND EFFECTS (%d), every call sounds a little different: v.sfx(name, at) or sfx.<name>():\n%s\nsfx.names(), sfx.get(name, **kw), sfx.tone(freq, dur, wave, vol, decay, sweep)\n"
+                "Real recordings: sfx.file(path), sfx.net(query), find_sounds(query), fetch_sound(item), load_sound(path), sound_credits()\nMusic: music.beat(bpm, bars, style, vol) styles: %s\nMixer(duration).add(buf, at, vol, pan).save(path)" % (
+                    len(sfx.names()), "\n".join("  %s: %s" % (k, " ".join(v)) for k, v in SFX_CATEGORIES.items()), ", ".join(_Music.STYLES)))
+    if t == "stages":
+        return "STAGES (Stage(kind, w, h) / Fight(stage=) / Show(stage=)): %s\nPALETTES: %s" % (", ".join(Stage.KINDS), ", ".join(sorted(PALETTES)))
+    if t == "easing":
+        return "EASINGS for ease(x, name), x from 0 to 1: %s" % _wrap(sorted(EASINGS), 96)
+    return ("COMPONENTS (use inside a draw function): Typewriter, Particles, BarChart, Subtitles, Timeline, Keys:\n" + "\n".join(
+        "%s%s\n%s" % (k.__name__, str(inspect.signature(k.__init__)).replace("(self, ", "(").replace("(self)", "()"), _api_methods(k)) for k in (Typewriter, Particles, BarChart, Subtitles)))
+
+
+_BUILTIN_POSES, _BUILTIN_MOVES = frozenset(POSES), frozenset(MOVES)
+
+
 if __name__ == "__main__":
+    if "--api" in sys.argv:
+        _i = sys.argv.index("--api")
+        print(catalog(sys.argv[_i + 1] if len(sys.argv) > _i + 1 else None))
+        sys.exit(0)
     sys.exit(_main(sys.argv[1:]))

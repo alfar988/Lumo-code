@@ -150,6 +150,7 @@ HELP = """
   /secret set|list|del <NAME>   store other API keys
   /compact [summary]            archive the older chat (newest 15 messages stay) to save tokens
   /todo · /clear · /save · /load
+  /remember [on|off]            keep the conversation after a restart (on by default)
   /key [provider] · /tokens · /net · /wakelock · /exit
 
 %s
@@ -163,7 +164,7 @@ HELP = """
 SLASH = ["/help", "/game", "/web", "/ask", "/plan", "/build", "/test", "/fix", "/review", "/readme", "/explain",
          "/refactor", "/models", "/model", "/rotate", "/mode", "/research", "/status", "/abilities", "/history",
          "/resume", "/notes", "/auto", "/access", "/undo", "/trash", "/ps", "/kill", "/serve", "/open", "/play", "/verify",
-         "/overview", "/ls", "/cd", "/skills", "/skill", "/templates", "/ui", "/secret", "/todo", "/compact", "/clear", "/save", "/load",
+         "/overview", "/ls", "/cd", "/skills", "/skill", "/templates", "/ui", "/secret", "/todo", "/compact", "/clear", "/remember", "/save", "/load",
          "/sessions", "/key", "/provider", "/checklimit", "/tokens", "/net", "/wakelock", "/init", "/search", "/dig", "/lessons", "/exit"]
 
 
@@ -661,6 +662,13 @@ def handle_command(ctx, line):
         return "exit"
     if cmd in ("/help", "/?"):
         out(HELP % (bold("Build & ask"), bold("Models & mode"), bold("Memory & permissions"), bold("More"), bold("Tips")))
+    elif cmd == "/remember":
+        a = (rest if isinstance(rest, str) else " ".join(arg or [])).strip().lower()
+        if a in ("on", "off"):
+            ctx.cfg["auto_resume"] = (a == "on")
+            save_config(ctx.cfg)
+        out("  " + (ok("✓ ") if ctx.cfg.get("auto_resume", True) else warn("! ")) + "Lumo " + ("keeps your conversation after a restart (history/ in this workspace)" if ctx.cfg.get("auto_resume", True)
+                                                                                         else "starts every restart with an empty chat") + dim("  · change with /remember on|off"))
     elif cmd == "/clear":
         ctx.messages, ctx.todos, ctx.plan, ctx.hist_count = [], [], None, 0
         ctx.plan_active, ctx.task, ctx.active_skills = False, "", []

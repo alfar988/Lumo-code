@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.10.0] - 2026-11-12
+
+### Added
+- **Any kind of video.** The video skill now says plainly that every video can be built (stories, characters, battles, explainers, promos, tutorials, slideshows, data stories, trailers, 3D scenes) and that templates are only starting points. New templates: `video-soldier-zombies`, `video-3d-fight`, `video-3d-scene`, `video-story`.
+- **Your own moves.** `define_pose(name, base, **angles)` and `define_move(name, keys, hit=...)` invent poses, animations and attacks that work in `Fight`, `Actor.play` and `Figure3D.play`; validation explains every mistake. Twenty built-in attacks (new: palm strike, side kick, low kick, headbutt, shoulder charge, dropkick, hammer fist, flying knee) and ten gestures and actions (shoot, reload, throw, wave, cheer, point, salute, surrender, zombie bite), more than seventy poses, eight gaits (zombie, march, sneak, limp, rifle, sprint ...).
+- **Actor and Show.** Stickmen for any 2D scene: walk in any gait, play any move or pose, speak in captions, carry and fire rifles and pistols (tracers, muzzle flash, shells, hit sparks, hit points, falling), zombies, explosions, camera path, sound.
+- **Real 3D.** `Scene3D` (perspective camera, flat lighting, fog, shadows, depth sorting, boxes, spheres, cylinders, cones, labels, glows), `Figure3D` (a 3D stick figure that uses the same poses, moves and gaits, yours included) and `Scene3D.from_fight(fight)`, which shows a 2D fight's choreography in 3D with a moving camera.
+- **No more guessing.** `video_api` tool and `python lumovideo.py --api [topic]` print the real names from the live library, with complete example scripts; every unknown name or attribute raises an error with the closest real names and the full list; a failed render points the model to `video_api`.
+- **Memory across restarts.** Lumo restores the last conversation of a workspace when it starts (also after it finished normally, not only after an error), keeps a never-compacted index of every request (`history/requests.md`) that is part of every prompt, and tells the model where to search the older chat. `/remember on|off` switches it; `/clear` starts a new topic.
+
+### Fixed
+- A render that failed half-way left ffmpeg running; it is stopped now.
+
 ## [1.9.0] - 2026-11-10
 
 ### Added

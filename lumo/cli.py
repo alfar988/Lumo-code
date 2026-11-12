@@ -17,7 +17,7 @@ from lumo.banner import print_header
 from lumo.client import NETSTATE
 from lumo.commands import cmd_resume, handle_command, SLASH
 from lumo.config import APP_DIR, DEFAULT_MODEL, HISTORY_FILE, HOME_DIR, ROUTER_MODEL, SKILLS_DIR, VERSION
-from lumo.memory import log_event, peek_history, repair_history, save_history
+from lumo.memory import auto_restore, log_event, peek_history, repair_history, save_history
 from lumo import providers, safelimit
 from lumo.models import auto_pick_model, models_cmd, rotation_enabled, start_refresher
 from lumo.provider_ui import choose_provider
@@ -276,6 +276,13 @@ def main():
                 r = cmd_resume(ctx)
                 if r:
                     first_prompt = r[7:]
+        elif ctx.cfg.get("auto_resume", True):                       # finished work: keep the conversation anyway, so Lumo remembers after a restart
+            if auto_restore(ctx):
+                from lumo.compact import compact_archive, est_tokens
+                if len(ctx.messages) > 60 or est_tokens(ctx.messages) > 30000:
+                    compact_archive(ctx, quiet=True)                   # a long chat is archived (nothing is lost: history/archive/), the newest messages stay
+                out("  " + ok("↺ continued your last conversation") + dim(" (%d messages, saved %s) · new topic: /clear · stop remembering: /remember off" % (
+                    len(ctx.messages), st.get("saved", "earlier"))))
 
     if args.cont and load_session(ctx, "last"):
         out("  " + ok("✓ resumed the last session (%d messages)" % len(ctx.messages)))

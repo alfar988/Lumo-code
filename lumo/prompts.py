@@ -8,7 +8,7 @@ from datetime import datetime
 from lumo import safelimit
 from lumo.config import APP_DIR, BUNDLED_SKILLS_DIR, PROMPTS_DIR, TEMPLATES_DIR
 from lumo.knowledge import lessons_block
-from lumo.memory import handoff_text, plan_markdown, read_notes_text
+from lumo.memory import earlier_requests_block, handoff_text, plan_markdown, read_notes_text
 from lumo.skills import catalog_text, list_skills, render_active_skills
 from lumo.templates import load_template_manifest, template_catalog
 from lumo.toolcalls import chunk_lines
@@ -142,6 +142,9 @@ def build_system(ctx, phase="build"):
     lessons = lessons_block(ctx)
     if lessons:
         parts.append(lessons)
+    earlier = earlier_requests_block(ctx)
+    if earlier:
+        parts.append(earlier)
     if ctx.handoff:
         parts.append("## HANDOFF: you are taking over interrupted work\n" + handoff_text(ctx, "model switch / recovery")[:int(7000 * share)])
     skills = render_active_skills(ctx, ctx.active_skills, skill_budget(ctx, phase))
