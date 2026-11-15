@@ -69,7 +69,7 @@ class Banner(unittest.TestCase):
     def test_wordmark_fits_every_width_and_has_both_sizes(self):
         big = banner.wordmark(60)
         small = banner.wordmark(34)
-        self.assertEqual((len(big), len(small)), (4, 3))
+        self.assertEqual((len(big), len(small)), (6, 3))
         for w in (30, 34, 44, 60, 100):
             for line in banner.header_lines(w):
                 self.assertLessEqual(vlen(ANSI_RE.sub("", line)), w, (w, line))
@@ -77,7 +77,7 @@ class Banner(unittest.TestCase):
     def test_header_names_the_product_and_version(self):
         text = "\n".join(ANSI_RE.sub("", l) for l in banner.header_lines(70))
         self.assertIn("Lumo Code", text)
-        self.assertIn("AI coding agent for the terminal", text)
+        self.assertIn("AI agent for the terminal", text)
         self.assertRegex(text, r"v\d+\.\d+\.\d+")
 
     def test_logo_asset_exists_and_is_valid_xml(self):

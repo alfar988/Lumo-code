@@ -154,8 +154,8 @@ def earlier_requests_block(ctx):
     if not lines:
         return ""
     return ("## Earlier conversations in this workspace (kept across restarts)\n" + "\n".join(lines)[:2400] +
-            "\nThe full conversation is in history/transcript.md and history/archive/. When the user refers to something you do not see in this chat, "
-            "search those files (search / read_file) before you say that you do not remember.")
+            "\nThese are background only: do not act on them unless the user's new message asks for it. The full conversation is in history/transcript.md "
+            "and history/archive/. Open those files only when the user refers to something earlier that you cannot see in this chat; never on your own.")
 
 
 def auto_restore(ctx):

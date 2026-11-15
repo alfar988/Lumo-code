@@ -83,6 +83,13 @@ class Ctx:
         self.usage = {"prompt": 0, "completion": 0, "last_prompt": 0}
         self.loaded_skills = set()
         self.turn = {"t0": 0.0, "tools": 0, "reqs": 0}
+        self.cur_phase = "build"        # chat | plan | build: the phase of the request being sent
+        self.ma_depth = 0               # > 0 while the light worker runs (a worker never delegates again)
+        self.ma_stats = {"jobs": 0, "reqs": 0, "tokens": 0}
+        self.ma_server_off = False      # OpenRouter refused the subagent server tool in this session
+        self.ma_note = ""
+        self.ma_auto = None
+        self.ma_list = []
 
     def cur_model(self):
         base = self.cfg.get("model", DEFAULT_MODEL)

@@ -1,14 +1,15 @@
-"""Startup banner: the LUMO wordmark drawn with half-block characters and a light-to-cool color gradient.
+"""Startup banner: the LUMO wordmark with a soft aurora gradient, depth shading and a glass highlight, then an info card.
 
-The logo has two sizes (34 and 23 columns wide) so it fits a phone terminal, and a plain ASCII version for
-terminals that cannot show Unicode. Color is used only when the terminal supports it (NO_COLOR is respected).
+The logo comes in three sizes so it fits a phone terminal: a shadow-lettered one (37 columns, 6 rows), a half-block one (34 columns, 4 rows)
+and a compact one (23 columns, 3 rows), plus a plain ASCII version for terminals that cannot show Unicode.
+Color is used only when the terminal supports it (NO_COLOR is respected).
 """
 
 import os
 import sys
 
 from lumo.config import VERSION
-from lumo.ui import ANSI_RE, USE_COLOR, bold, dim, faint, vlen
+from lumo.ui import ANSI_RE, bold, clip, dim, faint, USE_COLOR, vlen
 
 
 # Each glyph is a bitmap: '#' = lit pixel. Two pixel rows become one text row (upper half, lower half, full block).
@@ -24,11 +25,17 @@ SMALL = {  # 6 pixel rows -> 3 text rows, 5 columns per letter
     "M": ["#...#", "##.##", "#.#.#", "#...#", "#...#", "#...#"],
     "O": [".###.", "#...#", "#...#", "#...#", "#...#", ".###."],
 }
+SHADOW = {  # box-drawing letters with a built-in shadow: 6 rows, 37 columns for LUMO
+    "L": ["██╗     ", "██║     ", "██║     ", "██║     ", "███████╗", "╚══════╝"],
+    "U": ["██╗   ██╗", "██║   ██║", "██║   ██║", "██║   ██║", "╚██████╔╝", " ╚═════╝ "],
+    "M": ["███╗   ███╗", "████╗ ████║", "██╔████╔██║", "██║╚██╔╝██║", "██║ ╚═╝ ██║", "╚═╝     ╚═╝"],
+    "O": [" ██████╗ ", "██╔═══██╗", "██║   ██║", "██║   ██║", "╚██████╔╝", " ╚═════╝ "],
+}
 WORD = "LUMO"
 GAP = {"big": 2, "small": 1}
 
-# Light to cool: ice cyan, soft blue, pale violet. One warm spark (gold) as the single accent.
-STOPS = ((127, 227, 255), (122, 162, 255), (196, 161, 255))
+# Aurora: ice cyan, soft blue, violet, a touch of rose. One warm spark (gold) as the single accent.
+STOPS = ((110, 231, 255), (118, 166, 255), (176, 148, 255), (240, 150, 214))
 SPARK = (255, 212, 121)
 TRUECOLOR = os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit")
 
@@ -94,8 +101,46 @@ def _half_blocks(bits):
     return text
 
 
+def _lift(rgb, k):
+    """Brighten toward white by k (0..1)."""
+    return tuple(int(v + (255 - v) * k) for v in rgb)
+
+
+def _shadow_rows():
+    rows = ["" for _ in range(6)]
+    for ch in WORD:
+        for r in range(6):
+            rows[r] += SHADOW[ch][r]
+    return rows
+
+
+def _shadow_wordmark():
+    rows = _shadow_rows()
+    w, h = len(rows[0]), len(rows)
+    sheen = w * 0.58                                           # a soft diagonal glint, like light on glass
+    lines = []
+    for r, row in enumerate(rows):
+        cells = []
+        for x, ch in enumerate(row):
+            if ch == " ":
+                cells.append(" ")
+                continue
+            base = _gradient(x / float(max(1, w - 1)))
+            if ch == "█":                                      # the face of the letter: bright, a little darker toward the bottom
+                rgb = _shade(base, 1.0 - 0.20 * (r / float(h - 1)))
+                glint = max(0.0, 1.0 - abs((x - sheen) - 1.7 * (r - 2)) / 3.2)
+                rgb = _lift(rgb, 0.34 * glint)
+            else:                                              # the shadow strokes: the same hue, much darker, for depth
+                rgb = _shade(base, 0.46)
+            cells.append(_fg(rgb, ch))
+        lines.append("".join(cells))
+    return lines
+
+
 def wordmark(width):
     """The logo as colored text lines (no indent). Returns [] when the terminal is too narrow."""
+    if _utf8() and width >= 41:
+        return _shadow_wordmark()
     size = "big" if (width >= 38 and _utf8()) else "small"
     bits = _bitmap(size)
     if width < len(bits[0]) + 2:
@@ -130,16 +175,41 @@ def beam(width):
     return "".join(parts)
 
 
+TAGLINE = "AI agent for the terminal"
+
+
 def header_lines(width):
-    """Everything above the settings rows: wordmark, beam, product line. Each line starts with two spaces."""
+    """Everything above the info card: wordmark, beam, product line. Each line starts with two spaces."""
     mark = wordmark(width)
     lines = []
     if mark:
         lines += ["  " + l for l in mark]
         lines.append("  " + beam(vlen(mark[0])))
         lines.append("")
-    title = "  " + bold("Lumo Code") + dim("  v" + VERSION) + faint("  ·  ") + dim("AI coding agent for the terminal")
+    title = "  " + bold("Lumo Code") + dim("  v" + VERSION) + faint("  ·  ") + dim(TAGLINE)
     lines.append(title if vlen(title) <= width else "  " + bold("Lumo Code") + dim("  v" + VERSION))
+    return lines
+
+
+def card_lines(rows, width, title=""):
+    """A rounded info card. rows = [(label, value)]; value may already carry color. Every line is at most `width` columns."""
+    W = max(28, min(width, 60))
+    utf = _utf8()
+    tl, tr, bl, br, hz, vt = ("╭", "╮", "╰", "╯", "─", "│") if utf else ("+", "+", "+", "+", "-", "|")
+    inner = W - 6
+    label_w = min(12, max((len(l) for l, _v in rows), default=6))
+    head = ""
+    if title:
+        head = " " + title + " "
+    top = "  " + faint(tl) + (faint(hz) + dim(head) + faint(hz * max(0, W - 4 - 1 - len(head))) if head else faint(hz * (W - 4))) + faint(tr)
+    lines = [top]
+    for label, value in rows:
+        room = inner - label_w - 2
+        val = value if vlen(value) <= room else clip(ANSI_RE.sub("", value), room)
+        body = dim(label.ljust(label_w)) + "  " + val
+        pad = " " * max(0, inner - vlen(body))
+        lines.append("  " + faint(vt) + " " + body + pad + " " + faint(vt))
+    lines.append("  " + faint(bl + hz * (W - 4) + br))
     return lines
 
 

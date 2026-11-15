@@ -13,6 +13,8 @@ description: ANY video made with Python, 2D or 3D (stories, characters, fights, 
 6. Draw everything with the library. Sound: use its synthesised effects (over 80, no download); when the user wants real or more varied sound effects, use `find_sound` (free CC0 / CC-BY recordings, credits in `sounds/CREDITS.txt`). Never download songs, music, lyrics, copyrighted characters or footage, and never use a real person's face or voice.
 8. The library is a toolbox, not a list of templates: ANY video the user describes can be made, whatever the subject (a cooking tutorial, a product promo, a soldier and zombie battle, a love story skit, a 3D city flythrough, a birthday card, a data story, a game trailer). Templates are only starting points for the subjects they name; if none fits, write your own script from the building blocks below. Never say "I can only make fights" and never force a request into the nearest template.
 9. Never invent a name. Before you write or fix a script, call `video_api` for the topic you need (`recipes` has complete working scripts; `moves`, `poses`, `actor`, `show`, `fight`, `scene3d`, `canvas`, `sound`, `stages` list the real names) and use exactly what it returns. Do not read `lumovideo.py` line by line: it costs requests and the tool is exact. If something you need does not exist, say so in one line and build it yourself (`define_pose`, `define_move`, Canvas drawing).
+10. Stay on the request and make it connect. Everything the user named (characters, weapons, setting, mood, length) must be SEEN in the video, in an order that makes sense (setup, conflict, payoff), and nothing important that they did not name is added. No text-only slides, no counters standing in for a story, no actions without a visible target.
+11. The viewer must see the action. `Show` has an automatic camera that keeps the characters in the picture and closes in on the ones who shoot, talk or get hit: do not set `camera_keys` unless you want a path of your own, and use `show.focus(at, dur, who=actor)` for a close-up. Keep the stage compact: both sides of a fight start inside one screen width (about 1000 px apart at most), so every shot has a visible target.
 7. Every request is paid for from a daily allowance on free models: start from a template (`use_template`) and change only the settings, write the script in one `write_file`, render once, fix only real warnings. A finished video should take about four requests, not thirty.
 
 ## Defaults (use them, do not ask)
@@ -27,7 +29,7 @@ description: ANY video made with Python, 2D or 3D (stories, characters, fights, 
 
 ## Workflow
 1. **Brief** in your head: subject, length, format, style, sound. One line of assumptions to the user.
-2. **Storyboard** (anything over 10 s): 3-6 beats with times, for example `0-2 s title · 2-9 s fight · 9-12 s K.O. and winner`.
+2. **Storyboard** (anything over 10 s), five lines before any code: setting · cast (look, colour, weapon) · 3-6 beats with seconds, for example `0-2 s title · 2-9 s fight · 9-12 s K.O. and winner` · the last frame · the user's own words you must honour. Check each requested element has a beat; if one has none, add the beat now.
 3. **Script**: write the whole `videos/<name>.py` in one `write_file`. When a template fits the subject (`video-stickman-fight`, `video-3d-fight`, `video-soldier-zombies`, `video-story`, `video-3d-scene`, `video-explainer`, `video-kinetic-text`), `use_template` it; when none fits, write the script from the building blocks (`video_api` topic `recipes` has starters) and change names, colours, stage and length.
 4. **Render**: `render_video` with `script`. Use `quality: "draft"` for a first pass of a long or new script, then the final render.
 5. **Check and fix**: no blank frames, some motion, brightness above 6. A WARNING means a real problem: fix the script and render again. Never re-render without a reason.
@@ -113,6 +115,7 @@ Soldiers against zombies is one `Show` with `Actor(weapon="rifle", look="soldier
 - **Cartoon scene (ball, car, character)**: positions from `Keys` or `tween`; squash and stretch with `rx, ry` on `c.ellipse`; shadows on the ground; one idea per scene.
 
 ## What makes it look good
+- Readable characters: the library draws a pale rim around figures so dark colours stay visible on dark stages; still pick colours with contrast against the stage, and let the camera close in (the automatic camera zooms to about 1.5x on small groups) so characters fill a quarter to a third of the height.
 - Motion has weight: ease everything (`in_out_cubic` for moves, `out_back` for pop-ins, `out_bounce` for drops). Never move at constant speed unless it is a scroll.
 - Anticipation and follow-through: pull back before a fast move, settle after it. Hold the key frame for 2-4 frames on impact.
 - Text: at least 5 percent of the video height, always with an outline or shadow or a `c.rect(..., alpha=0.5)` behind it, max two lines, on screen at least 1.2 s plus 0.06 s per word.
@@ -133,6 +136,8 @@ Soldiers against zombies is one `Show` with `Actor(weapon="rifle", look="soldier
 | more than half of the frames do not change | long holds; add motion or cut the length |
 | almost no motion | the animation does not use time: every moving value must depend on `t` |
 | picture almost black | the background is never drawn or the colours are too dark |
+| N of M shots, hits and explosions happen outside the picture | the action is off-screen: remove `camera_keys` (the automatic camera follows the action), start the sides closer together, or add `show.focus(...)` |
+| no character is in view for X% of the video | same fix; also check that actors are placed with x between 0 and 1280 when they should be seen |
 | ffmpeg or Pillow missing | install as the error says, then render again |
 Make small fixes with `edit_file`, not a full rewrite. After the final render, if the length or look is not what was asked, change it once and render again.
 

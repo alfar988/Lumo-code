@@ -16,7 +16,7 @@ internet), Video (scenes, render, checks), Stick/Fight/Stage (stickman character
 (components), play_hints/open_video (how to watch the result).
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import array
 import bisect
@@ -2407,6 +2407,14 @@ class Video(_Helpful):
         rep = {"file": out, "format": "gif" if gif else "mp4", "width": pw, "height": ph, "fps": fps, "frames": total, "duration": round(total / float(fps), 2),
                "quality": q, "audio": bool(audio), "size_kb": int(os.path.getsize(out) / 1024), "render_s": round(time.time() - t0, 1),
                "blur": samples, "workers": nworkers, "qa": _qa(stats, self.duration, bool(audio))}
+        for sc in self.scenes:                                              # scenes that know their own picture (a Show) add notes: is the action in view?
+            fn = getattr(sc, "framing_notes", None)
+            if fn is not None:
+                try:
+                    rep["qa"]["warnings"].extend(fn())
+                    rep["qa"]["framing"] = sc.framing()
+                except Exception:
+                    pass
         print("LUMO_VIDEO_REPORT " + json.dumps(rep), flush=True)
         if not os.environ.get("LUMO_VIDEO_TOOL"):                       # run by hand: say how to watch it
             print(play_hints(out), flush=True)
@@ -2930,9 +2938,10 @@ class Stick(_Helpful):
     """A stickman. Stick('RYU', color='#4aa3ff', headband='#ffffff', gloves='#ff3b3b').
     You rarely draw it yourself: Fight does it. Direct use: stick.draw(c, x, ground, facing, pose, t) with pose a name from POSES or a dict."""
 
-    def __init__(self, name="FIGHTER", color="#4aa3ff", scale=1.0, line=8.0, headband=None, gloves=None, outline=True, belt=None, max_hp=100.0, weapon=None):
+    def __init__(self, name="FIGHTER", color="#4aa3ff", scale=1.0, line=8.0, headband=None, gloves=None, outline=True, belt=None, max_hp=100.0, weapon=None, rim=True):
         self.name, self.color, self.scale, self.line, self.headband, self.gloves, self.outline, self.belt, self.max_hp = \
             name, color, scale, line, headband, gloves, outline, belt, float(max_hp)
+        self.rim = bool(rim)                                             # a pale halo behind the body: dark characters stay readable on dark stages
         if weapon not in (None, "sword", "staff", "knife"):
             raise ValueError("weapon must be None, 'sword', 'staff' or 'knife' (weapons are cosmetic: the same strikes play)")
         self.weapon = weapon
@@ -2999,6 +3008,15 @@ class Stick(_Helpful):
             if self.outline:
                 c.line(J[a][0], J[a][1], J[b][0], J[b][1], edge, width + 4 * s)
             c.line(J[a][0], J[a][1], J[b][0], J[b][1], color, width)
+        if self.rim and alpha >= 0.5:
+            halo = mix(self.color, "#ffffff", 0.62)
+            if flash > 0:
+                halo = mix(halo, "#ffffff", flash)
+            rw = 8.5 * s
+            for a_, b_, d_, wd in (("chest", "elbow_l", "hand_l", 0.92), ("hip", "knee_l", "foot_l", 1.0), ("hip", "knee_r", "foot_r", 1.0), ("chest", "elbow_r", "hand_r", 0.92)):
+                c.polyline([J[a_], J[b_], J[d_]], halo, lw * wd + rw)
+            c.line(J["hip"][0], J["hip"][1], J["chest"][0], J["chest"][1], halo, lw * 1.15 + rw)
+            c.circle(J["head"][0], J["head"][1], _LIMBS["head"] * s + 2.5 * s + rw / 2.0, fill=halo)
         # far limbs, torso, near limbs, head
         limb("chest", "elbow_l", "hand_l", lw * 0.92, dark)
         limb("hip", "knee_l", "foot_l", lw * 1.0, dark)
@@ -4575,7 +4593,8 @@ class Actor(_Helpful):
 
 
 class Show(_Helpful):
-    """A scene with Actors on a Stage: add it to a Video (v.add(show)). The camera is still unless you give camera_keys. Actors do everything; the Show draws the
+    """A scene with Actors on a Stage: add it to a Video (v.add(show)). The camera follows the action by itself (camera_auto; focus(at, dur, who=...) directs it);
+    give camera_keys only for a path of your own. Actors do everything; the Show draws the
     stage, the bullets, muzzle flashes, shells, hits, explosions and captions, and plays the sounds.
         show = Show("city_night", [hero, zed], title="Last Stand", music="epic", duration=20)
         show.explode(9.0, x=700, radius=180)           # everything near x falls (or is hurt)
@@ -4591,6 +4610,25 @@ class Show(_Helpful):
         self.actors = list(actors)
         self._dur = duration
         self._texts, self._user_sounds, self._booms, self._cam, self._shakes_user = [], [], [], None, []
+        self._auto, self._auto_zoom, self._focus, self._track = True, (1.0, 1.55), [], None
+        self._done = False
+
+    def camera_auto(self, on=True, zoom=(1.0, 1.55)):
+        """The director's camera (on by default unless you give camera_keys): it follows the action, framing the characters that shoot, move, talk or get hit
+        and zooming in when only a few are close together. zoom = (widest, closest). Turn it off with camera_auto(False) for a still camera."""
+        lo, hi = float(zoom[0]), float(zoom[1])
+        if not (0.5 <= lo <= hi <= 3.0):
+            raise ValueError("camera_auto zoom must be (widest, closest) between 0.5 and 3, for example (1.0, 1.55)")
+        self._auto, self._auto_zoom, self._cam = bool(on), (lo, hi), None
+        self._done = False
+
+    def focus(self, at, dur=2.0, who=None, x=None, zoom=1.5):
+        """Direct the auto camera: from `at` for `dur` seconds look at one Actor (who=hero) or at ground position x, at this zoom."""
+        if who is None and x is None:
+            raise ValueError("focus needs who=<Actor> or x=<ground position>")
+        if who is not None and not isinstance(who, Actor):
+            raise ValueError("who must be an Actor")
+        self._focus.append(dict(t0=float(at), t1=float(at) + float(dur), who=who, x=x, zoom=float(zoom)))
         self._done = False
 
     def add(self, *actors):
@@ -4625,6 +4663,7 @@ class Show(_Helpful):
         if not ks:
             raise ValueError("camera_keys needs at least one (seconds, x, zoom)")
         self._cam = ks
+        self._auto = False
 
     @property
     def end(self):
@@ -4742,7 +4781,138 @@ class Show(_Helpful):
         for a in self.actors:
             a._faces.sort(key=lambda f: f[0])
             a._build(T)
+        self._build_auto_camera()
         self._done = True
+
+    # ---- the director's camera ----
+    _TRACK_DT = 0.1
+
+    def _interest(self, a, t):
+        """How much the camera cares about actor `a` at time t (0 = not at all): present and alive 0.6, plus shooting, being shot at, a move, a caption, walking."""
+        if not a._visible(t):
+            return 0.0
+        w = 0.6 + (0.4 if a.gun else 0.0) + (0.3 if a in self.actors[:2] else 0.0) - (0.25 if a.look == "zombie" else 0.0)    # heroes outrank a crowd
+        if a._dead is not None and t > a._dead:
+            w *= max(0.0, 1.0 - (t - a._dead) / 2.2)
+            if w <= 0.0:
+                return 0.0
+        for c in a._shots:
+            if c["t"] - 0.3 <= t <= c["t"] + c["burst"] * c["gap"] + 0.5:
+                w += 1.2
+                break
+        for o in self.actors:
+            for c in o._shots:
+                if c["target"] is a and c["t"] - 0.3 <= t <= c["t"] + c["burst"] * c["gap"] + 0.6:
+                    w += 0.6
+                    break
+        for cl in a._clips:
+            if cl["kind"] == "move" and cl["t0"] - 0.1 <= t <= cl["t1"]:
+                w += 0.9
+                break
+        for (t0, t1, _txt) in a._bubbles:
+            if t0 - 0.2 <= t <= t1:
+                w += 0.9
+                break
+        for (t0, t1, x0, x1, _g) in a._segs:
+            if t0 <= t <= t1 and x0 != x1:
+                w += 0.5
+                break
+        return w
+
+    def _frame_target(self, t, prev):
+        """(centre x, zoom) that frames the most interesting actors at time t."""
+        W = float(self.W)
+        zlo, zhi = self._auto_zoom
+        for f in self._focus:
+            if f["t0"] <= t <= f["t1"]:
+                fx = f["who"]._x_at(t) if f["who"] is not None else f["x"]
+                return float(fx), f["zoom"]
+        rows = []
+        for a in self.actors:
+            w = self._interest(a, t)
+            if w > 0.25:
+                rows.append((w, a._x_at(t)))
+        if not rows:
+            return prev
+        rows.sort(key=lambda r: -r[0])
+        pad = 0.17 * W
+        room = W / zlo - 2 * pad                      # how wide a group fits in the widest frame
+        lo = hi = None
+        for w, x in rows:                              # the most interesting first; whoever does not fit is left out
+            nlo, nhi = (x if lo is None else min(lo, x)), (x if hi is None else max(hi, x))
+            if nhi - nlo <= room or lo is None:
+                lo, hi = nlo, nhi
+        need = (hi - lo) + 2 * pad
+        z = clamp(W / max(need, 1.0), zlo, zhi)
+        return (lo + hi) / 2.0, z
+
+    def _build_auto_camera(self):
+        self._track = None
+        if not self._auto or self._cam or not self.actors:
+            return
+        dt = self._TRACK_DT
+        n = int((self.duration + 3.0) / dt) + 2
+        prev = (self.W / 2.0, 1.0)
+        # the first moment decides the start; look for the first time anyone is of interest
+        raw = []
+        for i in range(n):
+            prev = self._frame_target(i * dt, prev)
+            raw.append(prev)
+        xs, zs = [r[0] for r in raw], [r[1] for r in raw]
+
+        def smooth(v, half, rounds):
+            for _ in range(rounds):
+                out = []
+                for i in range(len(v)):
+                    lo, hi = max(0, i - half), min(len(v) - 1, i + half)
+                    out.append(sum(v[lo:hi + 1]) / (hi - lo + 1))
+                v = out
+            return v
+        # heavy, look-ahead smoothing (the whole timeline is known): the camera glides to where the action is going instead of chasing it
+        self._track = list(zip(smooth(xs, 7, 3), smooth(zs, 9, 3)))
+
+    def _view(self, t):
+        cx, _cy, z, _sh = self._camera(t)
+        half = self.W / (2.0 * z)
+        return cx - half, cx + half
+
+    def framing(self):
+        """How well the camera shows the action: {'events': n, 'offscreen': k, 'empty_ratio': share of the time with no character in view}."""
+        self._compile()
+        ev = []
+        for fx in self._fx:
+            if fx["kind"] == "flash":
+                ev.append((fx["t"], fx["x"]))
+            elif fx["kind"] in ("spark", "boom"):
+                ev.append((fx["t"], fx["x"]))
+        for a in self.actors:
+            if a._dead is not None:
+                ev.append((a._dead, a._x_at(a._dead)))
+        off = 0
+        for t, x in ev:
+            lo, hi = self._view(t)
+            if not (lo - 30 <= x <= hi + 30):
+                off += 1
+        steps = max(1, int(self.duration / 0.25))
+        empty = 0
+        for i in range(steps):
+            t = (i + 0.5) * self.duration / steps
+            lo, hi = self._view(t)
+            if not any(a._visible(t) and lo <= a._x_at(t) <= hi for a in self.actors):
+                empty += 1
+        return {"events": len(ev), "offscreen": off, "empty_ratio": round(empty / float(steps), 2)}
+
+    def framing_notes(self):
+        """Warnings for the render report: the viewer must SEE what happens."""
+        f = self.framing()
+        notes = []
+        if f["events"] >= 4 and f["offscreen"] > 0.25 * f["events"]:
+            notes.append("%d of %d shots, hits and explosions happen outside the picture: remove camera_keys (the automatic camera follows the action) or move the path "
+                         "of your own to where things happen; focus(at, dur, who=actor) closes in on one character" % (f["offscreen"], f["events"]))
+        if f["empty_ratio"] > 0.12:
+            notes.append("no character is in view for %d%% of the video: let the automatic camera work (no camera_keys) or place the characters inside the picture"
+                         % round(f["empty_ratio"] * 100))
+        return notes
 
     def summary(self):
         self._compile()
@@ -4776,6 +4946,11 @@ class Show(_Helpful):
                         u = ease((t - ks[i - 1][0]) / (ks[i][0] - ks[i - 1][0]), "in_out_sine")
                         x, z = ks[i - 1][1] + (ks[i][1] - ks[i - 1][1]) * u, ks[i - 1][2] + (ks[i][2] - ks[i - 1][2]) * u
                         break
+        elif self._track:
+            tr, f = self._track, max(0.0, t) / self._TRACK_DT
+            i = min(int(f), len(tr) - 2)
+            u = min(1.0, f - i)
+            x, z = tr[i][0] + (tr[i + 1][0] - tr[i][0]) * u, tr[i][1] + (tr[i + 1][1] - tr[i][1]) * u
         else:
             x, z = self.W / 2.0, 1.0
         g = self.ground

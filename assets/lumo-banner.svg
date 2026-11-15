@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="336" viewBox="0 0 960 336" role="img" aria-labelledby="t d">
   <title id="t">Lumo Code</title>
-  <desc id="d">LUMO wordmark with a thin ray of light below it. Lumo Code is an AI coding agent for the terminal.</desc>
+  <desc id="d">LUMO wordmark with a thin ray of light below it. Lumo Code is an AI agent for the terminal.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#10151d"/><stop offset="1" stop-color="#0b0f15"/></linearGradient>
-    <linearGradient id="ink" gradientUnits="userSpaceOnUse" x1="225" y1="0" x2="735" y2="0"><stop offset="0" stop-color="#7fe3ff"/><stop offset="0.5" stop-color="#7aa2ff"/><stop offset="1" stop-color="#c4a1ff"/></linearGradient>
-    <linearGradient id="ray" gradientUnits="userSpaceOnUse" x1="225" y1="0" x2="735" y2="0"><stop offset="0" stop-color="#7fe3ff"/><stop offset="0.6" stop-color="#7aa2ff" stop-opacity="0.65"/><stop offset="1" stop-color="#c4a1ff" stop-opacity="0"/></linearGradient>
+    <linearGradient id="ink" gradientUnits="userSpaceOnUse" x1="225" y1="0" x2="735" y2="0"><stop offset="0" stop-color="#6ee7ff"/><stop offset="0.38" stop-color="#76a6ff"/><stop offset="0.72" stop-color="#b094ff"/><stop offset="1" stop-color="#f096d6"/></linearGradient>
+    <linearGradient id="ray" gradientUnits="userSpaceOnUse" x1="225" y1="0" x2="735" y2="0"><stop offset="0" stop-color="#6ee7ff"/><stop offset="0.6" stop-color="#b094ff" stop-opacity="0.65"/><stop offset="1" stop-color="#f096d6" stop-opacity="0"/></linearGradient>
     <linearGradient id="shade" gradientUnits="userSpaceOnUse" x1="0" y1="70" x2="0" y2="190"><stop offset="0" stop-color="#ffffff" stop-opacity="0.10"/><stop offset="1" stop-color="#000000" stop-opacity="0.24"/></linearGradient>
     <filter id="glow" x="-10%" y="-30%" width="120%" height="160%"><feGaussianBlur stdDeviation="14"/></filter>
   </defs>

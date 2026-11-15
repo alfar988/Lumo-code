@@ -11,7 +11,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from lumo import guard, safelimit
+from lumo import guard, multiagent, safelimit, scope
 from lumo.client import err_reason, stream_chat
 from lumo.config import (
     CHAT_TOOLS, MAX_ROT_PER_TURN, MAX_STEPS, PLAN_MAX_STEPS, PLAN_TOOLS, SNAP_IGNORE, WEB_TOOLS,
@@ -76,6 +76,8 @@ def decide_intent(ctx, text):
         return "build", True
     if forced == "chat" or mode == "chat":
         return "chat", False
+    if scope.is_smalltalk(t):
+        return "chat", False                                   # "hi", "thanks", "who are you": a plain answer, no tools needed
     build = bool(re.search(BUILD_VERBS, t)) and bool(re.search(BUILD_NOUNS, t))
     if build:
         return "build", plan_wanted
@@ -280,6 +282,7 @@ def failover_provider(ctx):
 
 def call_model(ctx, phase, tools, on_text, on_status, ui):
     tried, ctx_tries, bad_tries, tok_tries = [], 0, 0, 0
+    ctx.cur_phase = phase
     while True:
         model = ctx.cur_model()
         sanitize_messages(ctx.messages)
@@ -349,7 +352,7 @@ def call_model(ctx, phase, tools, on_text, on_status, ui):
 
 def run_agent(ctx, phase, allowed, max_steps, stop_tool=None):
     """Model <-> tool loop. Returns: done | stop_tool | error | limit."""
-    hidden = safelimit.hidden_tools(ctx.task)
+    hidden = set(safelimit.hidden_tools(ctx.task)) | multiagent.hidden_tools(ctx)
     schemas = slim_schemas([t["schema"] for n, t in TOOLS.items() if n in allowed and n not in hidden], tight=safelimit.maximum())
     empty = nudges = steps = badjson = trunc = verifs = relogin = err_streak = polish = issue_nudges = 0
     reviewed = False
@@ -429,6 +432,7 @@ def run_agent(ctx, phase, allowed, max_steps, stop_tool=None):
             sp.stop()
         show(gate.flush())
         md.flush()
+        multiagent.flush_notice(ctx)
         if usage:
             ctx.usage["prompt"] += usage.get("prompt_tokens", 0) or 0
             ctx.usage["completion"] += usage.get("completion_tokens", 0) or 0
@@ -592,11 +596,13 @@ def run_agent(ctx, phase, allowed, max_steps, stop_tool=None):
             ctx.turn["tools"] += 1
             tool_header(name, args)
             key = loop_key(name, args)
-            res = loop_check(ctx, key) or prefetched.get(tc["id"]) or exec_tool(ctx, name, args)
+            res = loop_check(ctx, key) or scope.guard(ctx, name, args) or prefetched.get(tc["id"]) or exec_tool(ctx, name, args)
             loop_record(ctx, key, res)
             if note:
                 res = res + "\n" + note
             failed = is_failure(name, res)
+            if failed and name in CHECK_TOOLS and (name != "run_shell" or is_check_command(args.get("command", ""))):
+                res = multiagent.digest_failure(ctx, name, args, res)      # multi-agent: the light model reads a long failure first
             if failed:
                 n_err += 1
             else:
@@ -673,6 +679,7 @@ def run_turn(ctx, user_text):
     intent, need_plan = decide_intent(ctx, user_text)
     ctx.intent = intent
     cont = intent == "task" and is_continuation(user_text)    # "continue", "lanjut", /resume: the earlier work goes on
+    scope.note_request(ctx, user_text, intent, cont)         # does this request concern the workspace? (reading tools stay shut otherwise)
     if intent != "chat" and not cont:
         ctx.task = user_text                                  # the request that this turn is about
     if intent == "build":

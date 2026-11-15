@@ -13,12 +13,12 @@ import time
 from pathlib import Path
 
 from lumo.agent import run_turn
-from lumo.banner import print_header
+from lumo.banner import card_lines, print_header
 from lumo.client import NETSTATE
 from lumo.commands import cmd_resume, handle_command, SLASH
 from lumo.config import APP_DIR, DEFAULT_MODEL, HISTORY_FILE, HOME_DIR, ROUTER_MODEL, SKILLS_DIR, VERSION
 from lumo.memory import auto_restore, log_event, peek_history, repair_history, save_history
-from lumo import providers, safelimit
+from lumo import multiagent, providers, safelimit
 from lumo.models import auto_pick_model, models_cmd, rotation_enabled, start_refresher
 from lumo.provider_ui import choose_provider
 from lumo.sessions import load_session, save_session
@@ -77,7 +77,8 @@ def status_line(ctx):
     budget = tw() - 5
     chip, chip_plain = mode_chip(ctx)
     rot = " ⇄" if ctx.override and ctx.override[0] == ctx.cfg.get("model", DEFAULT_MODEL) else ""
-    model_s = clip(short_model(ctx.cur_model()) + rot, 22)
+    rot += " ◈" if multiagent.enabled(ctx) else ""            # ◈ = multi-agent mode is on
+    model_s = clip(short_model(ctx.cur_model()) + rot, 24)
     req = ("req %d" % req_today(ctx)) if is_free_model(ctx.cur_model()) else ""
     with_req = bool(req)
 
@@ -139,17 +140,23 @@ def banner(ctx):
     chip, _ = mode_chip(ctx)
     out()
     print_header(out, tw())
-    out(rule())
-    out("  " + dim("workspace  ") + fit_path(ctx.ws, w - 14))
-    out("  " + dim("provider   ") + providers.active(ctx.cfg)["name"])
-    out("  " + dim("model      ") + clip(ctx.cur_model(), w - 14))
-    out("  " + dim("fallback   ") + (ok("on") + dim(" · switches model automatically on errors") if rotation_enabled(ctx) else warn("off")))
-    out("  " + dim("access     ") + chip + dim(" · outside the workspace: ask"))
-    out("  " + dim("memory     ") + "history/" + dim(" (automatic)"))
+    out()
+    room = max(12, w - 22)
+    rows = [("workspace", fit_path(ctx.ws, room)),
+            ("provider", providers.active(ctx.cfg)["name"]),
+            ("model", clip(ctx.cur_model(), room))]
+    if multiagent.enabled(ctx):
+        rows.append(("multi-agent", ok("on") + dim(" · light ") + clip(multiagent.light_model(ctx), max(8, room - 12))))
+    rows.append(("fallback", (ok("on") + dim(" · switches model on errors")) if rotation_enabled(ctx) else warn("off")))
+    rows.append(("access", chip + dim(" · outside the workspace: ask")))
+    rows.append(("memory", "history/" + dim(" (automatic)")))
     if safelimit.active():
-        out("  " + dim("saver      ") + ok(safelimit.label()) + dim(" · fewer requests and tokens"))
-    out(rule())
-    out("  " + dim("Describe what to build or fix.  /help · /models · /checklimit · /provider"))
+        rows.append(("saver", ok(safelimit.label()) + dim(" · fewer requests")))
+    for line in card_lines(rows, tw(), "session"):
+        out(line)
+    out()
+    out("  " + dim("Ask me anything, or tell me what to build or fix."))
+    out("  " + faint("/help") + dim("  ") + faint("/multiagent") + dim("  ") + faint("/models") + dim("  ") + faint("/checklimit") + dim("  ") + faint("/provider"))
     if ctx.cfg.get("model") == ROUTER_MODEL:
         out("  " + warn("!") + dim(" the random router gives inconsistent quality"))
         out("    " + dim("use /models to pick a fixed model"))
@@ -191,13 +198,14 @@ def migrate_old_home():
 
 def main():
     global CTX
-    ap = argparse.ArgumentParser(prog="lumo", description="Lumo Code - AI coding agent for the terminal (OpenRouter)")
+    ap = argparse.ArgumentParser(prog="lumo", description="Lumo Code - AI agent for the terminal (OpenRouter and other providers)")
     ap.add_argument("workspace", nargs="?", help="workspace folder (default: current directory, or ~/workspace when run from HOME)")
     ap.add_argument("-m", "--model", help="model id for the active provider")
     ap.add_argument("--provider", help="AI provider: openrouter, anthropic, xai (Grok), openai, gemini, groq, mistral, deepseek, together, ...")
     ap.add_argument("-p", "--prompt", help="one-shot mode: send a single request, then exit")
     ap.add_argument("-c", "--continue", dest="cont", action="store_true", help="continue the last session")
     ap.add_argument("--auto", action="store_true", help="approve edits and commands inside the workspace automatically")
+    ap.add_argument("--multiagent", action="store_true", help="start with multi-agent mode on (smart model + light worker); same as /multiagent on")
     ap.add_argument("--setup", action="store_true", help="enter the API key again")
     ap.add_argument("--version", action="version", version="Lumo Code " + VERSION)
     args = ap.parse_args()
@@ -228,6 +236,8 @@ def main():
         ws = (Path.home() / "workspace") if cwd in (Path.home().resolve(), APP_DIR.resolve()) else cwd
     ws.mkdir(parents=True, exist_ok=True)
 
+    if args.multiagent:
+        cfg["multiagent"] = True
     ctx = Ctx(cfg, ws)
     CTX = ctx
     ctx.auto = args.auto

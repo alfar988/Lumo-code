@@ -71,6 +71,8 @@ def tool_label(name, a, w):
         return clip(g("url") or g("query"), w)
     if name == "video_api":
         return clip(g("topic") or "topics", w)
+    if name == "delegate":
+        return clip("%s: %s" % (g("role"), g("task").replace("\n", " ")), w)
     if name == "todo":
         return "(%d steps)" % len(a.get("items") or [])
     if name == "manage_process":
@@ -133,4 +135,5 @@ TOOL_META.update({
     "system_info": ("System", C_VIO), "preview_web": ("Preview", C_VIO), "run_python": ("Python", C_VIO),
     "append_file": ("Append", C_WARN), "use_template": ("Template", C_WARN), "review_ui": ("Review", C_OK),
     "render_video": ("Video", C_VIO), "video_info": ("Probe", C_ACC), "find_sound": ("Sound", C_VIO), "video_api": ("API", C_ACC),
+    "delegate": ("Worker", C_VIO),
 })

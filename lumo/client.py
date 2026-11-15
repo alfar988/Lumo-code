@@ -70,6 +70,8 @@ def read_json(resp, on_text):
     tcs = []
     for i, tc in enumerate(m.get("tool_calls") or []):
         fn = tc.get("function") or {}
+        if str(fn.get("name", "")).startswith("openrouter:") or str(tc.get("type", "")).startswith("openrouter:"):
+            continue
         a = fn.get("arguments")
         a = json.dumps(a) if isinstance(a, dict) else (a or "{}")
         tcs.append({"id": tc.get("id") or "call_%d" % i, "type": "function", "function": {"name": fn.get("name", ""), "arguments": a}})
@@ -219,7 +221,7 @@ def read_stream(resp, on_text, on_status, emitted, stall_secs, max_secs):
     tcs = []
     for i in sorted(calls):
         c = calls[i]
-        if not c["name"]:
+        if not c["name"] or c["name"].startswith("openrouter:"):
             continue
         tcs.append({"id": c["id"] or "call_%d_%d" % (int(time.time()), i), "type": "function",
                     "function": {"name": c["name"], "arguments": c["args"] or "{}"}})
@@ -247,7 +249,8 @@ def build_request(ctx, model, messages, tools, max_tokens, use_stream):
     if mt:
         body["max_completion_tokens" if quirks.get("max_completion_tokens") else "max_tokens"] = int(mt)
     if tools:
-        body["tools"] = tools
+        from lumo import multiagent                     # late import: multiagent uses this module
+        body["tools"] = list(tools) + multiagent.server_tools(ctx, prov, model)
     return prov, base + "/chat/completions", body, headers
 
 
@@ -313,6 +316,10 @@ def stream_chat(ctx, model, messages, tools, on_text, on_status=None, retries=1,
                 if "temperature" in body and "temperature" in low and re.search(r"unsupported|not support|only the default|invalid", low):
                     remember_quirk(ctx, prov, model, "no_temperature")             # reasoning models fix the temperature
                     quirk_try += 1
+                    continue
+            if prov["id"] == "openrouter":
+                from lumo import multiagent
+                if multiagent.server_rejected(ctx, body, code, low):          # the subagent server tool was refused: go on without it
                     continue
             if kind == "daily":
                 if prov["id"] == "openrouter":

@@ -1,8 +1,8 @@
-<p align="center"><img src="assets/lumo-banner.svg" alt="Lumo Code: AI coding agent for the terminal" width="720"></p>
+<p align="center"><img src="assets/lumo-banner.svg" alt="Lumo Code: AI agent for the terminal" width="720"></p>
 
 # Lumo Code
 
-Lumo Code is an AI coding agent for the terminal. You describe what you want in plain language, and it plans the work, writes the files, runs commands, checks its own result and fixes what fails. It talks to [OpenRouter](https://openrouter.ai), so it works with the free models there, and it needs nothing beyond the Python standard library.
+Lumo Code is an AI agent for the terminal. Ask a question, have something researched or calculated, work with your files, or build and fix software: you say what you want in plain language and it does that, checks its own result and fixes what fails. It stays modest and on topic, and it does not open your files or folders unless your request is about them. It talks to [OpenRouter](https://openrouter.ai), so it works with the free models there, and it needs nothing beyond the Python standard library.
 
 It was built to run well in Termux on a phone (narrow output, no heavy dependencies), and it runs the same on any Linux machine or macOS.
 
@@ -98,6 +98,7 @@ The key can also come from the `OPENROUTER_API_KEY` environment variable. `LUMO_
 | Command | What it does |
 |---|---|
 | `/models` | choose a free model |
+| `/multiagent [on\|off]` | smart model plus a light worker (unpacks files, runs tests, condenses errors); `/multiagent worker [id\|auto]` picks the worker |
 | `/plan [task]` | research and plan first, then build |
 | `/ui` | review and polish the web pages in the workspace |
 | `/skills`, `/skill why` | list skills, show why they were picked |
@@ -125,6 +126,22 @@ Also: `!ls` runs a shell command directly, `@file.py` includes a file in your me
 Lumo remembers: the conversation of a workspace is restored when you start it again (also after it finished normally), every request is indexed in `history/requests.md` (never compacted, part of every prompt), and older chat stays searchable in `history/transcript.md` and `history/archive/`. `/remember off` turns it off.
 
 Each request is handled on its own. The plan and the todo list of earlier work do not carry over to a new request, and the automatic checks never open files the request did not touch. Say `continue` (or use `/resume`) to pick up unfinished work.
+
+## Multi-agent mode
+
+`/multiagent` (or `python run.py --multiagent`) splits the work between two models:
+
+| Model | Does |
+|---|---|
+| **smart** (the one from `/models`) | writes code, plans, answers you, repairs errors |
+| **light** (a small, fast model; chosen automatically or with `/multiagent worker`) | unpacks and reads files, runs tests and checks, condenses long error output |
+
+Two links connect them. On OpenRouter every request gets one extra entry in its `tools` array, `{"type": "openrouter:subagent", "parameters": {"model": "<light model>"}}`, the server tool that lets the smart model hand text jobs to the worker (it only sees the task text). On any provider the smart model also has a local `delegate` tool: `role=extract` (unpack an archive, find and read files, report facts) and `role=test` (run a check or test command and report `file:line | error | cause`). The local worker runs inside Lumo with a small read-only toolset, so it can work on your workspace; it never edits files, and the test worker only runs checks and read-only commands.
+
+- `/multiagent worker` lists lighter models and `/multiagent worker <n|id>` picks one (`auto` goes back to the automatic choice). `/multiagent server on|off` switches the OpenRouter server tool. `/multiagent status` shows who does what and how many worker requests this session used.
+- If OpenRouter refuses the server tool for a model, Lumo drops it for the session, tells you once, and goes on with `delegate`.
+- A failing check with long output is read by the light model first: the smart model gets the errors in a few lines plus the tail of the raw output.
+- Every worker request counts toward your request limit (free models share one daily limit); the saver modes skip the error digest.
 
 ### Research
 
@@ -179,6 +196,7 @@ Ask for a video in plain words ("make a stickman fight video", "a 20 second expl
 - `video_info` inspects any video file (length, codecs, sound, blank or frozen frames).
 - **Smooth by default (lumovideo 1.1).** 60 fps at `standard` quality, motion blur (automatic for scripts that ask for 30 fps or less), several CPU cores drawing frames at once (up to four; `LUMO_VIDEO_WORKERS=1` turns it off), and a stickman rig whose every pose change is blended from the pose the body really had, so fighters never snap between moves. Fights have 12 attacks (jab, cross, hook, elbow, uppercut, knee, front kick, round kick, axe kick, sweep, flying kick, superman punch), flurries, trades of blows, blocks, dodges and backflips, knock-back, hit flash, dust, speed streaks behind strikes and a camera that punches in on hard hits; `auto(pace=...)` makes them calm or frantic.
 - **Your own moves and any kind of scene (lumovideo 1.2).** `define_pose(name, base, **angles)` and `define_move(name, keys, hit=...)` invent poses, animations and attacks (20 attacks and over 70 poses are built in); they work in `Fight`, in `Actor` (stickmen for any 2D scene: gaits, captions, rifles and pistols that really shoot, zombies, explosions, camera path) and in 3D. `Scene3D` is real 3D (perspective camera, lighting, fog, shadows, shapes, a 3D stick figure that uses the same poses) and `Scene3D.from_fight(fight)` shows a fight in 3D.
+- **The action is always in view (lumovideo 1.3).** `Show` now has an automatic camera: it frames the characters that shoot, talk, move or get hit, closes in on small groups (up to 1.55x) and glides between them with look-ahead smoothing; `show.focus(at, dur, who=actor)` directs it, `camera_keys` is only for a path of your own. Figures get a pale rim so dark colours stay readable on dark stages (`Stick(rim=False)` turns it off). The render check reports `N of M shots, hits and explosions happen outside the picture` or `no character is in view for X%`, and the soldiers-and-zombies and story templates use the new camera with a compact stage (the horde walks in from just beyond the right edge).
 - **No guessing.** The `video_api` tool (or `python lumovideo.py --api moves`) prints the real names and complete example scripts from the live library; every wrong name raises an error with the closest real names.
 - **Over 80 sound effects**, each call a little different: fight, movement (footsteps for wood, dirt, grass, gravel, metal, sand, concrete), voices, crowd, cinematic, nature, interface, machine, cartoon, weapon and creature families (`sfx.names()`). Real recordings: the `find_sound` tool saves free CC0 / CC-BY sounds from the internet (Openverse; Freesound too with a `FREESOUND_API_KEY` secret) into `sounds/` with a `CREDITS.txt`; scripts load them with `sfx.file(...)`, or call `sfx.net("punch impact")`, which caches and falls back to a synthesised effect when offline.
 - No video is made, and no GIF, music or extra file is added, unless you ask for it. If you write "MP3" for a video, Lumo makes an MP4 and says so.

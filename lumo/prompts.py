@@ -5,7 +5,7 @@ import platform
 import re
 from datetime import datetime
 
-from lumo import safelimit
+from lumo import multiagent, safelimit
 from lumo.config import APP_DIR, BUNDLED_SKILLS_DIR, PROMPTS_DIR, TEMPLATES_DIR
 from lumo.knowledge import lessons_block
 from lumo.memory import earlier_requests_block, handoff_text, plan_markdown, read_notes_text
@@ -36,8 +36,8 @@ def access_label(ctx):
 _PROMPT_CACHE = {}
 
 FALLBACK_SYSTEM = (
-    "You are Lumo Code, a coding agent working in the user's terminal (<<ENV>>). "
-    "Finish tasks end-to-end with tools; never only describe what you could do. Stay inside the user's current request and leave other files alone.\n"
+    "You are Lumo Code (Lumo for short), an AI agent working in the user's terminal (<<ENV>>). You answer questions, research, calculate, write and handle files, and you code when asked. "
+    "Be modest and exact. Finish what the user asked with tools; never only describe what you could do. Stay inside the user's current request and do not open files or folders nobody asked about.\n"
     "Workspace: <<WORKSPACE>> | OS: <<OS>> | Python <<PYTHON>> | Date: <<DATE>> | File access: <<ACCESS>>\n"
     "Call tools through native tool-calling with valid JSON. Write files in parts of at most <<CHUNK_LINES>> lines "
     "(write_file, then append_file). Verify with verify_files, run what you build, fix errors yourself, and report briefly in the "
@@ -123,9 +123,13 @@ def build_system(ctx, phase="build"):
     rules = fill_template(read_prompt("tool-rules.md"), values)
     if rules:
         parts.append(rules)
+    ma = multiagent.prompt_block(ctx, phase)
+    if ma:
+        parts.append(ma)                                      # multi-agent mode: who does what (smart model vs light worker)
     if phase == "plan":
         parts.append(fill_template(read_prompt("plan-prompt.md", "# PHASE: PLANNING\nResearch briefly, then call submit_plan."), values))
-        parts.append("## Workspace overview\n" + overview_text(ctx, limit=int(3500 * share)))
+        if getattr(ctx, "scope_reason", ""):                  # only when the request concerns the workspace; never scan folders on our own
+            parts.append("## Workspace overview\n" + overview_text(ctx, limit=int(3500 * share)))
     elif phase == "chat":
         parts.append(fill_template(read_prompt("qa-prompt.md", "# MODE: Q&A\nAnswer directly; do not modify files."), values))
     for fn in ("LUMO.md", "AXION.md", "AGENTS.md", "CLAUDE.md"):

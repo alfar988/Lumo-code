@@ -46,7 +46,7 @@ def build():
     b.walk(t, to=-60, dur=2.2)
     end = t + 2.4
     show = Show(STAGE, [a, b], title=TITLE, music=MUSIC, duration=end)
-    show.camera_keys([(0, 640, 1.0), (end * 0.5, 640, 1.25), (end, 640, 1.0)])
+    # no camera_keys: the automatic camera frames whoever talks or moves; show.focus(at, dur, who=actor) closes in on one
     show.text(0.2, TITLE, dur=1.8, size=84, style="pop", y=140)
     v = Video(1280, 720)
     v.add(show)

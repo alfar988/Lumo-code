@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.11.0] - 2026-11-15
+
+### Added
+- **Multi-agent mode** (`/multiagent`, or `--multiagent` at start). A smart model (the one chosen with `/model`) plans, writes code, answers and repairs errors; a light worker model unpacks and reads files, runs tests and condenses errors. Two links connect them: the OpenRouter server tool `openrouter:subagent` (one entry in the request's `tools` array, the worker model in `parameters`) and a local `delegate` tool (`role=extract` or `role=test`) that works on your workspace with a small read-only toolset. `/multiagent worker [id|n|auto]` picks the worker (automatic: a lighter model of the same provider), `/multiagent server on|off` switches the server tool. When OpenRouter refuses the server tool, Lumo drops it for the session and carries on with `delegate`. A failing check with long output is read by the light model first (digest plus raw tail).
+- **Scope guard.** Questions, small talk, research and new builds no longer start by listing folders or reading files: reading tools answer "not needed" unless the message points at the workspace (a file, folder, path, `@file`, "fix", "continue" ...). The planning prompt no longer scans the workspace on its own.
+- **New banner.** Shadow-lettered LUMO with an aurora gradient and a glint, a rounded session card, and a multi-agent row; three logo sizes for narrow phones.
+
+- **Videos you can follow (lumovideo 1.3).** The automatic `Show` camera frames the action (heroes outrank a crowd; groups are closed in on; look-ahead smoothing), `Show.focus(...)` and `Show.camera_auto(...)` direct it, figures have a rim light, and the render report warns when shots, hits or explosions happen outside the picture or no character is in view. The soldiers-and-zombies template no longer starts the horde 1400 px away (shots at invisible targets) and no longer pins a fixed camera; the story template uses the automatic camera. `video-skill` adds "stay on the request and make it connect" and a five-line storyboard.
+
+### Changed
+- The system prompt describes a modest, general AI agent (not a coding project machine): plain tone, honest about what it does not know, no bragging, files stay untouched unless the request is about them.
+- Small talk ("hi", "thanks", "who are you") is answered in Q&A mode.
+- The earlier-conversations note says plainly that it is background and must not be opened unprompted.
+
 ## [1.10.0] - 2026-11-12
 
 ### Added

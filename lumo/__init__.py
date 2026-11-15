@@ -1,1 +1,1 @@
-"""Lumo Code: an AI coding agent for the terminal (OpenRouter)."""
+"""Lumo Code: an AI agent for the terminal (OpenRouter and other providers)."""

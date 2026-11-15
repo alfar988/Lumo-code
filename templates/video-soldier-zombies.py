@@ -39,8 +39,8 @@ def build():
             kind = "brute" if (w == WAVES - 1 and k == 0) else ("runner" if w > 0 and rnd.random() < 0.22 else "walker")
             hp = {"walker": 2, "runner": 1, "brute": 5}[kind]
             speed = {"walker": rnd.uniform(75, 105), "runner": rnd.uniform(170, 220), "brute": 62.0}[kind]
-            born = 1.6 + w * span + k * rnd.uniform(0.3, 0.7)
-            x0, stop = 1400 + rnd.uniform(0, 260), FRONT + rnd.uniform(0, 36)
+            born = 1.6 + w * span + k * rnd.uniform(0.5, 1.0)
+            x0, stop = FRONT + 520 + rnd.uniform(0, 380), FRONT + rnd.uniform(0, 36)       # they walk in from just beyond the right edge: every shot has a visible target
             a = Actor("Z%d.%d" % (w, k), {"walker": "#7fb069", "runner": "#9bbf5a", "brute": "#5f8f4a"}[kind], x=x0, facing=-1, scale=1.3 if kind == "brute" else 1.0,
                       look="zombie", hp=hp, lane=rnd.choice((-18, 0, 18)))
             a.walk(born, to=stop, speed=speed, gait="sprint" if kind == "runner" else "zombie")
@@ -51,7 +51,7 @@ def build():
         return max(z["stop"], z["x0"] - z["speed"] * (t - z["born"])) if t >= z["born"] else z["x0"]
 
     def alive(t):
-        return [z for z in zombies if z["end"] is None and z["born"] <= t and px(z, t) < 1250]
+        return [z for z in zombies if z["end"] is None and z["born"] <= t and px(z, t) < FRONT + 700]
     cool = [0.0] * len(soldiers)
     grenade_at = [SECONDS * (0.42 + 0.25 * i) for i in range(GRENADES)]
     lose_from = SECONDS * 0.7 if OUTCOME == "lose" else 1e9
@@ -99,7 +99,7 @@ def build():
         show.text(1.0 + w * span - 0.1, "WAVE %d" % (w + 1), dur=1.4, size=96, color="#ffd166", style="slam")
     show.text(SECONDS - 2.6, "SURVIVED" if OUTCOME == "win" else "OVERRUN", dur=2.2, size=120, color="#ff5252" if OUTCOME != "win" else "#3ddc84", style="slam")
     show.sound(0.0, sfx.wind(SECONDS, 0.25), 0.4)
-    show.camera_keys([(0, 560, 1.18), (SECONDS * 0.5, 640, 1.22), (SECONDS, 600, 1.12)])
+    # no camera_keys: the automatic camera keeps the soldiers and the zombies in the picture (show.focus(at, dur, who=actor) closes in on one)
     v = Video(1280, 720)
     v.add(show)
     return v, show
