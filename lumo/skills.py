@@ -390,6 +390,10 @@ def pick_skills(ctx, text, intent, need_plan=False, phase="build", limit=MAX_ACT
         bonus["skill-memory-knowledge-management"] = 3.0
     if ERROR_PASTE_RX.search(text or ""):
         bonus["debug-skill"] = bonus.get("debug-skill", 0.0) + 4.0
+    if intent in ("build", "task"):
+        from lumo import multiagent
+        if multiagent.enabled(ctx):                       # multi-agent mode: the smart model codes to a higher standard
+            bonus["code-quality-skill"] = bonus.get("code-quality-skill", 0.0) + 3.5
     ws_bonus = {}
     for kind in workspace_hints(ctx):
         for nm in WS_BONUS.get(kind, ()):

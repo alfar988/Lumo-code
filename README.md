@@ -98,6 +98,7 @@ The key can also come from the `OPENROUTER_API_KEY` environment variable. `LUMO_
 | Command | What it does |
 |---|---|
 | `/models` | choose a free model |
+| `/banner [aurora\|shadow\|mini]` | show the banner again; the style is remembered (`/banner anim off` stops the line-by-line reveal) |
 | `/multiagent [on\|off]` | smart model plus a light worker (unpacks files, runs tests, condenses errors); `/multiagent worker [id\|auto]` picks the worker |
 | `/plan [task]` | research and plan first, then build |
 | `/ui` | review and polish the web pages in the workspace |
@@ -138,6 +139,7 @@ Each request is handled on its own. The plan and the todo list of earlier work d
 
 Two links connect them. On OpenRouter every request gets one extra entry in its `tools` array, `{"type": "openrouter:subagent", "parameters": {"model": "<light model>"}}`, the server tool that lets the smart model hand text jobs to the worker (it only sees the task text). On any provider the smart model also has a local `delegate` tool: `role=extract` (unpack an archive, find and read files, report facts) and `role=test` (run a check or test command and report `file:line | error | cause`). The local worker runs inside Lumo with a small read-only toolset, so it can work on your workspace; it never edits files, and the test worker only runs checks and read-only commands.
 
+- The smart model must be a strong coder: switching the mode on replaces the random router (or a model weaker than the worker) with the best coding model available. `/multiagent smart` lists the best coders, `/multiagent smart <n|id|auto>` chooses. In this mode the prompt carries a code-quality standard and the `code-quality-skill` is loaded for build and task requests; the worker never writes code.
 - `/multiagent worker` lists lighter models and `/multiagent worker <n|id>` picks one (`auto` goes back to the automatic choice). `/multiagent server on|off` switches the OpenRouter server tool. `/multiagent status` shows who does what and how many worker requests this session used.
 - If OpenRouter refuses the server tool for a model, Lumo drops it for the session, tells you once, and goes on with `delegate`.
 - A failing check with long output is read by the light model first: the smart model gets the errors in a few lines plus the tail of the raw output.

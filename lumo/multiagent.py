@@ -162,6 +162,64 @@ def set_light_model(ctx, mid):
     save_config(ctx.cfg)
 
 
+CODER_NAME = re.compile(r"coder|codestral|devstral|deepseek|qwen-?3|glm|kimi|gpt-oss|nemotron-3-(?:ultra|super)|claude|gpt-5|gemini.*pro|llama-4|minimax|mistral-large", re.I)
+
+
+def coding_rank(ctx, m):
+    """How good a model is as the one that writes the code: general strength, reliability in this session, and a bonus for known code models."""
+    from lumo.models import clean_id, model_rel, model_score
+    return model_score(m) + model_rel(ctx, m.get("id") or "") + (4.0 if CODER_NAME.search(clean_id(m.get("id") or "")) else 0.0)
+
+
+def coder_candidates(ctx, n=6):
+    """The best models to write code with, best first: [(model dict, rank)]. Never the random router, never a tiny context."""
+    from lumo.models import ensure_models
+    rows = []
+    for m in list(ensure_models(ctx) or []):
+        if not m.get("id") or m["id"] == ROUTER_MODEL or int(m.get("context_length") or 0) < 32000:
+            continue
+        rows.append((m, coding_rank(ctx, m)))
+    rows.sort(key=lambda r: -r[1])
+    return rows[:n]
+
+
+def smart_problem(ctx):
+    """'' when the smart model is fine for coding; otherwise why it is not."""
+    smart = ctx.cfg.get("model") or ""
+    if not smart or smart == ROUTER_MODEL:
+        return "the random router picks a different model every time, so code quality jumps around"
+    chosen = (ctx.cfg.get("light_by_provider") or {}).get(provider_id(ctx))
+    if chosen and chosen != smart:
+        from lumo.models import model_score
+        by = ctx.models_by_id or {}
+        if model_score(by.get(chosen) or {"id": chosen}) > model_score(by.get(smart) or {"id": smart}) + 2:
+            return "the worker (%s) is a stronger model than the smart one" % short_model(chosen)
+    return ""
+
+
+def ensure_smart(ctx, say=True):
+    """Multi-agent only works well when the model that writes the code is a strong one. If the smart model is the random router (or weaker than the worker),
+    switch to the best coding model available. A model the user chose on purpose is never replaced unless the worker outranks it."""
+    problem = smart_problem(ctx)
+    if not problem:
+        return False
+    best = coder_candidates(ctx, 1)
+    if not best:
+        if say:
+            out("  " + warn("! ") + dim("smart model: " + problem + ". Pick a strong one with /models."))
+        return False
+    pick = best[0][0]["id"]
+    if pick == ctx.cfg.get("model"):
+        return False
+    ctx.cfg["model"] = pick
+    ctx.override = None
+    ctx.ma_auto = None
+    save_config(ctx.cfg)
+    if say:
+        out("  " + ok("✓ ") + dim("smart model set to ") + pick + dim(" (best for coding; " + problem + ")"))
+    return True
+
+
 def worker_is_distinct(ctx):
     return light_model(ctx) != smart_model(ctx)
 
@@ -230,6 +288,15 @@ def prompt_block(ctx, phase):
              "Delegate only when the job is big (many files, long output); do small jobs yourself. The worker does not see this chat, so put "
              "everything in the task: exact paths, the command, what you need back. Never delegate writing code, planning or the final answer. "
              "A report is a reading, not proof: open the file or rerun the check yourself before you rely on a surprising claim."]
+    if phase == "build":
+        lines += ["### Code quality (you write every line of code yourself)",
+                  "- Before you write: say to yourself what the code must do, its inputs and edge cases (empty, huge, wrong type, missing file), and how you will check it.",
+                  "- Write complete files that run: no placeholders, no `...`, no TODO left in finished code; every import, name, path and API call must be real.",
+                  "- Small functions with honest names; handle errors where they can happen; validate input; no secrets in code; one responsibility per file.",
+                  "- After writing: `verify_files`, then run it. Put a big test run on `delegate(role=\"test\")`, read its report, open the failing line yourself, fix the root cause, run again. "
+                  "Finish only after a clean run.",
+                  "- Read your own code once before you finish: names that do not exist, off-by-one, missing await or close, empty input, wrong path.",
+                  "- The worker never writes or edits code; if you want a change, make it yourself."]
     if server_tool_active(ctx):
         lines.append("The `openrouter:subagent` tool (run by OpenRouter) also exists for text you already hold, for example a long log you paste "
                      "into its task so it comes back condensed. It cannot see files. For anything in the workspace use `delegate`.")
@@ -413,6 +480,10 @@ def show_status(ctx):
         out("    " + dim("switch on: /multiagent on"))
         return
     out("    " + dim("smart  ") + clip(smart_model(ctx), tw() - 14) + dim("   plans · codes · answers · fixes errors"))
+    problem = smart_problem(ctx)
+    if problem:
+        out("    " + warn("! ") + dim(clip(problem, tw() - 10)))
+        out("    " + dim("fix: /multiagent smart auto"))
     out("    " + dim("light  ") + clip(light_model(ctx), tw() - 14) + dim("   unpacks files · runs tests · condenses errors"))
     if not worker_is_distinct(ctx):
         out("    " + warn("! ") + dim("both roles use the same model. Pick a lighter one: /multiagent worker"))
@@ -430,7 +501,7 @@ def show_status(ctx):
     st = ctx.ma_stats
     if st["jobs"] or st["reqs"]:
         out("    " + dim("session %d worker job%s · %d request%s · %d tokens" % (st["jobs"], "" if st["jobs"] == 1 else "s", st["reqs"], "" if st["reqs"] == 1 else "s", st["tokens"])))
-    out("    " + dim("/multiagent off · worker [id|n|auto] · server on|off"))
+    out("    " + dim("/multiagent off · smart [id|auto] · worker [id|auto] · server on|off"))
 
 
 def cmd_multiagent(ctx, arg):
@@ -442,6 +513,11 @@ def cmd_multiagent(ctx, arg):
         ctx.cfg["multiagent"] = now
         ctx.ma_server_off = False
         save_config(ctx.cfg)
+        if now:
+            try:
+                ensure_smart(ctx)                                        # the model that writes the code must be a strong one
+            except Exception:
+                pass
         show_status(ctx)
         if now:
             out("    " + dim("every worker request counts toward your request limit; free models share one daily limit."))
@@ -467,6 +543,29 @@ def cmd_multiagent(ctx, arg):
         else:
             set_light_model(ctx, want)
             out("  " + ok("✓ worker: ") + want)
+    elif sub == "smart":
+        want = arg[1] if len(arg) > 1 else ""
+        rows = []
+        if not want:
+            try:
+                rows = coder_candidates(ctx, 6)
+            except Exception:
+                rows = []
+            ctx.ma_list = [m["id"] for m, _r in rows]
+            out("  " + dim("smart: ") + smart_model(ctx) + dim("  (writes the code)"))
+            for i, (m, rank) in enumerate(rows, 1):
+                out("  %s %s %s" % (acc("%2d" % i), clip(m["id"], tw() - 14), dim("%dk" % (int(m.get("context_length") or 0) // 1000))))
+            out("  " + dim("choose: /multiagent smart <n|id> · best one: /multiagent smart auto"))
+        elif want.lower() == "auto":
+            ctx.cfg["model"] = ""                                        # force a fresh choice
+            ensure_smart(ctx)
+        else:
+            if want.isdigit() and ctx.ma_list and 1 <= int(want) <= len(ctx.ma_list):
+                want = ctx.ma_list[int(want) - 1]
+            ctx.cfg["model"], ctx.override = want, None
+            ctx.ma_auto = None
+            save_config(ctx.cfg)
+            out("  " + ok("✓ smart model: ") + want)
     elif sub == "server":
         val = (arg[1].lower() if len(arg) > 1 else "")
         if val in ("on", "off"):
@@ -475,4 +574,4 @@ def cmd_multiagent(ctx, arg):
             save_config(ctx.cfg)
         show_status(ctx)
     else:
-        out("  " + dim("usage: /multiagent [on|off|status] · worker [id|n|auto] · server on|off"))
+        out("  " + dim("usage: /multiagent [on|off|status] · smart [id|n|auto] · worker [id|n|auto] · server on|off"))

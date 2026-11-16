@@ -550,5 +550,122 @@ class EndToEnd(unittest.TestCase):
         self.assertNotIn("notes.txt", " ".join(tool_msgs))
 
 
+class AuroraBanner(unittest.TestCase):
+    """The v1.11 banner: emblem + letter-spaced title + gradient card, for every screen width."""
+
+    def test_the_emblem_is_a_ring_with_a_star(self):
+        for n in (10, 12, 16):
+            em = banner.emblem(n)
+            self.assertEqual(len(em), n // 2)
+            self.assertTrue(all(vlen(ANSI_RE.sub("", l)) == n for l in em), n)
+        pix = banner.emblem_pixels(16)
+        centre = pix[8][8]
+        self.assertGreater(centre[1], 0.5)                          # the star shines in the middle
+        self.assertEqual(pix[0][0][1], 0.0)                         # the corners stay transparent
+        ring = [pix[8][x][1] for x in range(0, 3)]
+        self.assertGreater(max(ring), 0.5)                          # and the ring is there
+
+    def test_layouts_fit_every_width(self):
+        shapes = {}
+        for w in (28, 32, 34, 36, 38, 40, 44, 50, 60, 100):
+            lines = banner.header_lines(w)
+            shapes[w] = len(lines)
+            for line in lines:
+                self.assertLessEqual(vlen(ANSI_RE.sub("", line)), w, (w, line))
+        self.assertEqual(shapes[100], 8)                            # the big emblem next to the title
+        self.assertEqual(shapes[44], 8)
+        self.assertEqual(shapes[40], 6)                             # a smaller emblem on a phone
+        self.assertEqual(shapes[28], 10)                            # emblem above the title when there is no room beside it
+
+    def test_other_styles(self):
+        self.assertEqual(len(banner.header_lines(60, "mini")), 1)
+        self.assertEqual(len(banner.header_lines(60, "shadow")), 9)
+        self.assertEqual(len(banner.header_lines(36, "shadow")), len(banner.header_lines(36)))     # too narrow: falls back to the emblem
+
+    def test_termux_gets_truecolor_even_without_colorterm(self):
+        env = {k: v for k, v in os.environ.items() if k not in ("COLORTERM", "LUMO_COLOR", "TERMUX_VERSION", "PREFIX")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertFalse(banner._truecolor())
+        with mock.patch.dict(os.environ, dict(env, TERMUX_VERSION="0.118"), clear=True):
+            self.assertTrue(banner._truecolor())
+        with mock.patch.dict(os.environ, dict(env, PREFIX="/data/data/com.termux/files/usr"), clear=True):
+            self.assertTrue(banner._truecolor())
+        with mock.patch.dict(os.environ, dict(env, COLORTERM="truecolor", LUMO_COLOR="256"), clear=True):
+            self.assertFalse(banner._truecolor())
+
+    def test_the_banner_command_switches_style_and_remembers_it(self):
+        ctx = make_ctx()
+        with mock.patch("lumo.cli.save_config"):
+            handle_command(ctx, "/banner mini")
+            self.assertEqual(ctx.cfg["banner_style"], "mini")
+            handle_command(ctx, "/banner shadow")
+            self.assertEqual(ctx.cfg["banner_style"], "shadow")
+            handle_command(ctx, "/banner anim off")
+            self.assertIs(ctx.cfg["banner_anim"], False)
+        self.assertIn("/banner", SLASH)
+        self.assertIn("/banner", HELP)
+
+    def test_animation_never_runs_without_a_terminal(self):
+        lines, slept = [], []
+        with mock.patch("lumo.banner.time.sleep", lambda s: slept.append(s)):
+            banner.print_header(lines.append, 60, "aurora", animate=False)
+        self.assertEqual(slept, [])
+        self.assertGreater(len(lines), 4)
+
+
+class SmartCoder(unittest.TestCase):
+    """Multi-agent mode keeps the model that writes the code strong."""
+
+    def pool(self, ctx, ids):
+        ctx.models_all = [{"id": i, "context_length": 128000} for i in ids]
+        ctx.models_by_id = {m["id"]: m for m in ctx.models_all}
+        ctx.models_provider, ctx.models_time = "openrouter", __import__("time").time()
+
+    IDS = ["nvidia/nemotron-3-ultra-550b-a55b:free", "nvidia/nemotron-3-nano-30b-a3b:free", "qwen/qwen3-coder:free", "google/gemma-3-12b-it:free"]
+
+    def test_the_random_router_is_replaced_by_the_best_coder(self):
+        ctx = make_ctx(model="openrouter/free", light_by_provider={})
+        self.pool(ctx, self.IDS)
+        self.assertIn("random router", multiagent.smart_problem(ctx))
+        with mock.patch("lumo.multiagent.save_config"):
+            self.assertTrue(multiagent.ensure_smart(ctx, say=False))
+        self.assertIn(ctx.cfg["model"], ("qwen/qwen3-coder:free", "nvidia/nemotron-3-ultra-550b-a55b:free"))
+        self.assertEqual(multiagent.smart_problem(ctx), "")
+
+    def test_a_model_the_user_chose_is_left_alone(self):
+        ctx = make_ctx(model="nvidia/nemotron-3-ultra-550b-a55b:free", light_by_provider={})
+        self.pool(ctx, self.IDS)
+        with mock.patch("lumo.multiagent.save_config"):
+            self.assertFalse(multiagent.ensure_smart(ctx, say=False))
+        self.assertEqual(ctx.cfg["model"], "nvidia/nemotron-3-ultra-550b-a55b:free")
+
+    def test_a_worker_stronger_than_the_smart_model_is_flagged(self):
+        ctx = make_ctx(model="google/gemma-3-12b-it:free", light_by_provider={"openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free"})
+        self.pool(ctx, self.IDS)
+        self.assertIn("stronger", multiagent.smart_problem(ctx))
+
+    def test_switching_multiagent_on_fixes_the_router_and_smart_auto_works(self):
+        ctx = make_ctx(model="openrouter/free", light_by_provider={})
+        self.pool(ctx, self.IDS)
+        with mock.patch("lumo.multiagent.save_config"):
+            handle_command(ctx, "/multiagent on")
+            self.assertNotEqual(ctx.cfg["model"], "openrouter/free")
+            handle_command(ctx, "/multiagent smart google/gemma-3-12b-it:free")
+            self.assertEqual(ctx.cfg["model"], "google/gemma-3-12b-it:free")
+            handle_command(ctx, "/multiagent smart auto")
+            self.assertNotEqual(ctx.cfg["model"], "google/gemma-3-12b-it:free")
+
+    def test_the_prompt_carries_a_code_standard_and_the_skill_is_picked(self):
+        ctx = make_ctx(multiagent=True)
+        build = build_system(ctx, "build")
+        self.assertIn("Code quality (you write every line of code yourself)", build)
+        self.assertIn("no placeholders", build)
+        self.assertNotIn("Code quality (you write", build_system(ctx, "chat"))
+        self.assertNotIn("Code quality (you write", build_system(make_ctx(), "build"))
+        from lumo.skills import pick_skills
+        names = pick_skills(ctx, "make me a python script that renames files", "build")
+        self.assertIn("code-quality-skill", names)
+
+
 if __name__ == "__main__":
     unittest.main()

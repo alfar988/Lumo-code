@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from lumo.agent import run_turn
-from lumo.banner import card_lines, print_header
+from lumo.banner import card_lines, print_header, STYLES
 from lumo.client import NETSTATE
 from lumo.commands import cmd_resume, handle_command, SLASH
 from lumo.config import APP_DIR, DEFAULT_MODEL, HISTORY_FILE, HOME_DIR, ROUTER_MODEL, SKILLS_DIR, VERSION
@@ -24,7 +24,7 @@ from lumo.provider_ui import choose_provider
 from lumo.sessions import load_session, save_session
 from lumo.state import Ctx, ensure_key, is_free_model, load_config, req_today, save_config
 from lumo.tools.shell import run_status_line, shell_run
-from lumo.ui import (
+from lumo.ui import (USE_COLOR, 
     acc, bold, C_USER, clip, dim, err, faint, fit_path, HAS_READLINE, ok, out,
     paint, readline, rl, rule, short_model, tw, vlen, warn,
 )
@@ -135,31 +135,55 @@ def run_user_shell(ctx, cmd):
     run_status_line(res, 600)
 
 
+def banner_style(ctx):
+    style = str(ctx.cfg.get("banner_style", "aurora"))
+    return style if style in STYLES else "aurora"
+
+
 def banner(ctx):
-    w = min(tw(), 60)
+    w = tw()
     chip, _ = mode_chip(ctx)
+    anim = bool(sys.stdout.isatty() and USE_COLOR and ctx.cfg.get("banner_anim", True) and not os.environ.get("LUMO_NO_ANIM"))
     out()
-    print_header(out, tw())
+    print_header(out, w, banner_style(ctx), animate=anim)
     out()
-    room = max(12, w - 22)
+    room = max(12, min(w, 60) - 22)
     rows = [("workspace", fit_path(ctx.ws, room)),
             ("provider", providers.active(ctx.cfg)["name"]),
             ("model", clip(ctx.cur_model(), room))]
     if multiagent.enabled(ctx):
         rows.append(("multi-agent", ok("on") + dim(" · light ") + clip(multiagent.light_model(ctx), max(8, room - 12))))
     rows.append(("fallback", (ok("on") + dim(" · switches model on errors")) if rotation_enabled(ctx) else warn("off")))
-    rows.append(("access", chip + dim(" · outside the workspace: ask")))
+    rows.append(("access", chip + dim(" · outside: ask")))
     rows.append(("memory", "history/" + dim(" (automatic)")))
     if safelimit.active():
         rows.append(("saver", ok(safelimit.label()) + dim(" · fewer requests")))
-    for line in card_lines(rows, tw(), "session"):
+    for line in card_lines(rows, w, "session"):
         out(line)
+        if anim:
+            time.sleep(0.03)
     out()
-    out("  " + dim("Ask me anything, or tell me what to build or fix."))
-    out("  " + faint("/help") + dim("  ") + faint("/multiagent") + dim("  ") + faint("/models") + dim("  ") + faint("/checklimit") + dim("  ") + faint("/provider"))
+    out("  " + dim("Ask anything, or say what to build or fix." if w >= 48 else "Ask anything, or say what to do."))
+    out("  " + faint("/help") + dim("  ") + faint("/multiagent") + dim("  ") + faint("/models") + dim("  ") + faint("/banner"))
     if ctx.cfg.get("model") == ROUTER_MODEL:
         out("  " + warn("!") + dim(" the random router gives inconsistent quality"))
         out("    " + dim("use /models to pick a fixed model"))
+
+
+def cmd_banner(ctx, arg):
+    """/banner [aurora|shadow|mini] [anim on|off]: show the banner again; the style is remembered."""
+    sub = (arg[0].lower() if arg else "")
+    if sub in STYLES:
+        ctx.cfg["banner_style"] = sub
+        save_config(ctx.cfg)
+    elif sub == "anim":
+        ctx.cfg["banner_anim"] = (arg[1].lower() != "off") if len(arg) > 1 else not ctx.cfg.get("banner_anim", True)
+        save_config(ctx.cfg)
+        out("  " + ok("✓ ") + dim("banner animation " + ("on" if ctx.cfg["banner_anim"] else "off")))
+    elif sub:
+        out("  " + dim("usage: /banner [%s] · /banner anim on|off" % "|".join(STYLES)))
+        return
+    banner(ctx)
 
 
 def start_wakelock(ctx):

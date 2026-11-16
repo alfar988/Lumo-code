@@ -76,9 +76,12 @@ class Banner(unittest.TestCase):
 
     def test_header_names_the_product_and_version(self):
         text = "\n".join(ANSI_RE.sub("", l) for l in banner.header_lines(70))
-        self.assertIn("Lumo Code", text)
+        self.assertIn("L U M O", text)                 # the title is letter-spaced in the default style ...
+        self.assertIn("C O D E", text)
         self.assertIn("AI agent for the terminal", text)
         self.assertRegex(text, r"v\d+\.\d+\.\d+")
+        plain = "\n".join(ANSI_RE.sub("", l) for l in banner.header_lines(70, "mini"))
+        self.assertIn("Lumo Code", plain)              # ... and plain in the one-line style
 
     def test_logo_asset_exists_and_is_valid_xml(self):
         import xml.etree.ElementTree as ET

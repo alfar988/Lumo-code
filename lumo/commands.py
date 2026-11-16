@@ -132,6 +132,7 @@ HELP = """
   /checklimit [probe]         how much of the AI allowance is left
   /rotate [auto|on|off|add id]  automatic fallback models
   /multiagent [on|off]          smart model + light worker (unpacks files, runs tests) · worker [id|auto]
+  /banner [aurora|shadow|mini]  show the banner again · /banner anim on|off
   /mode auto|chat|code        how the AI works
   /research on|off · /status · /abilities
   /search [kind] <query>        search the web now (kinds: news code qa docs packages academic wiki)
@@ -163,7 +164,7 @@ HELP = """
 
 
 SLASH = ["/help", "/game", "/web", "/ask", "/plan", "/build", "/test", "/fix", "/review", "/readme", "/explain",
-         "/refactor", "/models", "/model", "/rotate", "/multiagent", "/mode", "/research", "/status", "/abilities", "/history",
+         "/refactor", "/models", "/model", "/rotate", "/multiagent", "/banner", "/mode", "/research", "/status", "/abilities", "/history",
          "/resume", "/notes", "/auto", "/access", "/undo", "/trash", "/ps", "/kill", "/serve", "/open", "/play", "/verify",
          "/overview", "/ls", "/cd", "/skills", "/skill", "/templates", "/ui", "/secret", "/todo", "/compact", "/clear", "/remember", "/save", "/load",
          "/sessions", "/key", "/provider", "/checklimit", "/tokens", "/net", "/wakelock", "/init", "/search", "/dig", "/lessons", "/exit"]
@@ -807,6 +808,9 @@ def handle_command(ctx, line):
         cmd_research(ctx, arg)
     elif cmd == "/rotate":
         cmd_rotate(ctx, arg)
+    elif cmd == "/banner":
+        from lumo.cli import cmd_banner                           # late import: cli imports this module
+        cmd_banner(ctx, arg)
     elif cmd in ("/multiagent", "/multi", "/agents"):
         from lumo import multiagent
         multiagent.cmd_multiagent(ctx, arg)

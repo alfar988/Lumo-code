@@ -680,6 +680,12 @@ def run_turn(ctx, user_text):
     ctx.intent = intent
     cont = intent == "task" and is_continuation(user_text)    # "continue", "lanjut", /resume: the earlier work goes on
     scope.note_request(ctx, user_text, intent, cont)         # does this request concern the workspace? (reading tools stay shut otherwise)
+    if multiagent.enabled(ctx) and intent != "chat" and not getattr(ctx, "ma_checked", False):
+        ctx.ma_checked = True
+        try:
+            multiagent.ensure_smart(ctx)                         # the model that writes the code must not be the random router or weaker than its worker
+        except Exception:
+            pass
     if intent != "chat" and not cont:
         ctx.task = user_text                                  # the request that this turn is about
     if intent == "build":

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.1] - 2026-11-15
+
+### Changed
+- **A new banner, not just new colors.** The startup screen is now an emblem (a glowing ring with a four-point star and a small gold satellite, painted two pixels per text cell) next to a letter-spaced `L U M O  C O D E` title, a gradient rule, the tagline and the version, followed by a session card with a rounded frame whose color flows from cyan to rose. It adapts to the screen: a 16 px emblem beside the title from 42 columns, 12 px from 38, 10 px from 36, and the emblem above the title below that, so a phone in portrait gets the new look too (the old chunky logo only showed up on narrow screens before). Termux is recognised as a 24-bit color terminal even when `COLORTERM` is not set (`LUMO_COLOR=256` forces 256 colors). The lines appear one after the other when the terminal is interactive (`/banner anim off`).
+- `/banner [aurora|shadow|mini]` shows the banner again and remembers the style (`shadow` is the big shadow-lettered LUMO for 41+ columns, `mini` is one line).
+- Multi-agent mode keeps the coder strong: when it is switched on (or at the first request) a smart model that is the random router, or weaker than the worker, is replaced by the best coding model available (`/multiagent smart [id|n|auto]` chooses by hand; a model you picked yourself is never replaced unless the worker outranks it). The system prompt gets a "Code quality" standard (design the edge cases first, complete files without placeholders, verify and run, delegate big test runs, fix the root cause, re-read before finishing; the worker never writes code) and the `code-quality-skill` is loaded for build and task requests.
+
 ## [1.11.0] - 2026-11-15
 
 ### Added
