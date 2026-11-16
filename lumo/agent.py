@@ -76,8 +76,8 @@ def decide_intent(ctx, text):
         return "build", True
     if forced == "chat" or mode == "chat":
         return "chat", False
-    if scope.is_smalltalk(t):
-        return "chat", False                                   # "hi", "thanks", "who are you": a plain answer, no tools needed
+    if scope.is_vague(t):
+        return "chat", False                                   # "hi", "woii", "thanks", "who are you": a plain answer, no tools, no old work
     build = bool(re.search(BUILD_VERBS, t)) and bool(re.search(BUILD_NOUNS, t))
     if build:
         return "build", plan_wanted
@@ -596,7 +596,9 @@ def run_agent(ctx, phase, allowed, max_steps, stop_tool=None):
             ctx.turn["tools"] += 1
             tool_header(name, args)
             key = loop_key(name, args)
-            res = loop_check(ctx, key) or scope.guard(ctx, name, args) or prefetched.get(tc["id"]) or exec_tool(ctx, name, args)
+            res = (loop_check(ctx, key) or scope.guard(ctx, name, args) or scope.install_guard(ctx, name, args)
+                   or prefetched.get(tc["id"]) or exec_tool(ctx, name, args))
+            scope.note_result(ctx, res)
             loop_record(ctx, key, res)
             if note:
                 res = res + "\n" + note
@@ -715,7 +717,7 @@ def run_turn(ctx, user_text):
         if intent == "build" and need_plan and ctx.cfg.get("plan", True):
             plan_phase(ctx, user_text)
         if intent == "chat":
-            run_agent(ctx, "chat", CHAT_TOOLS, MAX_STEPS)
+            run_agent(ctx, "chat", set() if getattr(ctx, "vague", False) else CHAT_TOOLS, MAX_STEPS)
         else:
             run_agent(ctx, "build", set(TOOLS), MAX_STEPS)
     finally:

@@ -98,7 +98,7 @@ The key can also come from the `OPENROUTER_API_KEY` environment variable. `LUMO_
 | Command | What it does |
 |---|---|
 | `/models` | choose a free model |
-| `/banner [aurora\|shadow\|mini]` | show the banner again; the style is remembered (`/banner anim off` stops the line-by-line reveal) |
+| `/banner [bold\|thin\|emblem\|shadow\|mini]` | show the banner again; the style is remembered (`/banner anim off` stops the line-by-line reveal) |
 | `/multiagent [on\|off]` | smart model plus a light worker (unpacks files, runs tests, condenses errors); `/multiagent worker [id\|auto]` picks the worker |
 | `/plan [task]` | research and plan first, then build |
 | `/ui` | review and polish the web pages in the workspace |

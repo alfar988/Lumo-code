@@ -205,7 +205,8 @@ def beam(width):
 
 
 TAGLINE = "AI agent for the terminal"
-STYLES = ("aurora", "shadow", "mini")
+STYLES = ("bold", "thin", "emblem", "shadow", "mini")
+STYLE_ALIASES = {"aurora": "bold", "beam": "bold"}
 
 
 def _over(base, layer):
@@ -308,8 +309,124 @@ def lockup(width, version=VERSION, tagline=TAGLINE):
     return ["  " + _spaced("LUMO", lambda t: _gradient(0.55 * t)) + "  " + dim(ver), "  " + dim(clip(tagline, width - 4))]
 
 
-def header_lines(width, style="aurora"):
+THIN = {  # a thin double-line alphabet: 3 rows, 3 columns per letter, crisp in any terminal font
+    "L": ["╦  ", "║  ", "╩═╝"], "U": ["╦ ╦", "║ ║", "╚═╝"], "M": ["╔╦╗", "║║║", "╩ ╩"], "O": ["╔═╗", "║ ║", "╚═╝"],
+    "C": ["╔═╗", "║  ", "╚═╝"], "D": ["╔╦╗", " ║║", "═╩╝"], "E": ["╔═╗", "║╣ ", "╚═╝"],
+}
+
+
+def _thin_rows(words, gap=1, word_gap=4):
+    """Rows of the thin logotype for e.g. ['LUMO', 'CODE'] as plain text."""
+    rows = ["", "", ""]
+    for wi, word in enumerate(words):
+        for li, ch in enumerate(word):
+            for r in range(3):
+                rows[r] += THIN[ch][r] + (" " * gap if li < len(word) - 1 else "")
+        if wi < len(words) - 1:
+            rows = [r + " " * word_gap for r in rows]
+    return rows
+
+
+def _paint(text, t0, t1, lift=0.0):
+    """Color a plain string with the gradient from t0 to t1 (columns), bold; spaces stay spaces."""
+    n = max(1, len(text) - 1)
+    return "".join(ch if ch == " " else bold(_fg(_lift(_gradient(t0 + (t1 - t0) * i / float(n)), lift), ch)) for i, ch in enumerate(text))
+
+
+def _light_beam(n):
+    """A line of light: thick and bright in the middle, thinner and dimmer toward both ends, a gold spark at the centre."""
+    c = (n - 1) / 2.0
+    out = []
+    for i in range(n):
+        d = abs(i - c) / max(1.0, c)
+        t = i / float(max(1, n - 1))
+        if i == int(c) or (n % 2 == 0 and i == int(c) + 1):
+            out.append(_fg(SPARK, "✦") if i == int(c) else _fg(_lift(_gradient(t), 0.4), "━"))
+            continue
+        ch = "━" if d < 0.33 else "─" if d < 0.85 else "╌"
+        out.append(_fg(_shade(_lift(_gradient(t), 0.5 * (1.0 - d) ** 2), 0.55 + 0.45 * (1.0 - d)), ch))
+    return "".join(out)
+
+
+def beam_hero(width, version=VERSION, tagline=TAGLINE):
+    """LUMO CODE in thin letters, a beam of light, the tagline and the version, centred in a column of at most 60."""
+    W = max(20, min(width - 2, 60))
+    ver = "v" + version
+    if W >= 36:
+        rows = _thin_rows(["LUMO", "CODE"])
+    else:
+        rows = _thin_rows(["LUMO"])
+    mw = len(rows[0])
+
+    def centre(plain_len, painted):
+        return "  " + " " * max(0, (W - plain_len) // 2) + painted
+
+    lines = [centre(mw, _paint(r, 0.0, 0.85)) for r in rows]
+    bw = min(W, max(mw + 8, 28))
+    lines.append(centre(bw, _light_beam(bw)))
+    tag = tagline if len(tagline) <= W else "terminal AI agent"
+    lines.append(centre(len(tag), dim(tag)))
+    hint = ver + "  ·  /help for commands" if len(ver) + 5 + 18 <= W else ver
+    lines.append(centre(len(hint), faint(ver) + (faint("  ·  ") + dim("/help for commands") if hint != ver else "")))
+    if W < 36:
+        lines.insert(3, centre(4, dim("C O D E")))
+    return lines
+
+
+SLAB = {  # bold rounded letters, 8 x 10 pixels (two pixels per text row), hard edges: crisp on any screen
+    "L": ["##......"] * 8 + ["########"] * 2,
+    "U": ["##....##"] * 8 + [".######.", "..####.."],
+    "M": ["##....##", "###..###", "########", "##.##.##", "##.##.##"] + ["##....##"] * 5,
+    "O": ["..####..", ".######."] + ["##....##"] * 6 + [".######.", "..####.."],
+}
+
+
+def slab_rows(word="LUMO", gap=2):
+    """The wordmark as text rows (half blocks, solid colors, a horizontal aurora gradient and a lighter top edge); no blending, no soft edges."""
+    cols = []
+    for i, ch in enumerate(word):
+        cols.append(SLAB[ch])
+        if i < len(word) - 1:
+            cols.append(["." * gap] * 10)
+    grid = ["".join(c[r] for c in cols) for r in range(10)]
+    w = len(grid[0])
+    lines = []
+    for tr in range(0, 10, 2):
+        cells = []
+        for x in range(w):
+            def px(r):
+                if grid[r][x] != "#":
+                    return None
+                base = _gradient(0.0 + 0.9 * x / float(max(1, w - 1)))
+                return _lift(base, 0.34 * (1.0 - r / 9.0))                # the top of each letter catches the light
+            cells.append(_cell(px(tr), px(tr + 1)))
+        lines.append("".join(cells))
+    return lines
+
+
+def slab_hero(width, version=VERSION, tagline=TAGLINE):
+    """Big, bold, crisp LUMO, a beam of light under it, 'C O D E' with the tagline, then the version. Centred in a column of at most 60."""
+    W = max(20, min(width - 2, 60))
+    rows = slab_rows()
+    mw = vlen(rows[0])
+    ver = "v" + version
+
+    def centre(painted):
+        return "  " + " " * max(0, (W - vlen(painted)) // 2) + painted
+    lines = [centre(r) for r in rows]
+    bw = max(mw, 30)
+    lines.append(centre(_light_beam(min(W, bw))))
+    code = _paint("C O D E", 0.1, 0.9)
+    tag = tagline if len("C O D E  ·  ") + len(tagline) <= W else "terminal AI agent"
+    lines.append(centre(code + faint("  ·  ") + dim(tag)))
+    hint = faint(ver) + (faint("  ·  ") + dim("/help for commands") if len(ver) + 5 + 18 <= W else "")
+    lines.append(centre(hint))
+    return lines
+
+
+def header_lines(width, style="bold"):
     """Everything above the info card. Each line starts with two spaces and fits `width` columns."""
+    style = STYLE_ALIASES.get(style, style)
     if style == "mini" or not _utf8():
         title = "  " + bold("Lumo Code") + dim("  v" + VERSION) + faint("  ·  ") + dim(TAGLINE)
         return [title if vlen(title) <= width else "  " + bold("Lumo Code") + dim("  v" + VERSION)]
@@ -318,7 +435,11 @@ def header_lines(width, style="aurora"):
         if mark:
             title = "  " + bold("Lumo Code") + dim("  v" + VERSION) + faint("  ·  ") + dim(TAGLINE)
             return ["  " + l for l in mark] + ["  " + beam(vlen(mark[0])), "", title if vlen(title) <= width else "  " + bold("Lumo Code") + dim("  v" + VERSION)]
-    return lockup(width)
+    if style == "emblem":
+        return lockup(width)
+    if style == "thin" or width < 42:
+        return beam_hero(width)
+    return slab_hero(width)
 
 
 def card_lines(rows, width, title=""):
@@ -353,7 +474,7 @@ def card_lines(rows, width, title=""):
     return lines
 
 
-def print_header(out, width, style="aurora", animate=False):
+def print_header(out, width, style="bold", animate=False):
     lines = header_lines(width, style)
     for line in lines:
         out(line)

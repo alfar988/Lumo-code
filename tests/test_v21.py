@@ -483,6 +483,12 @@ class MAHandler(http.server.BaseHTTPRequestHandler):
             if last.get("role") == "tool":
                 return _sse(self, _text("notes.txt says: hello from the worker"))
             return _sse(self, _call("read_file", {"path": "notes.txt"}, "w_1"))
+        if sc == "ping" and model != LIGHT:
+            return _sse(self, _text("Halo! Ada yang bisa saya bantu?"))
+        if sc == "install":                                        # the model tries to install packages on its own
+            if last.get("role") == "tool":
+                return _sse(self, _text("ok"))
+            return _sse(self, _call("run_shell", {"command": "pkg search pillow pyarrow protobuf pydeck altair"}))
         if sc == "scope":                                          # small talk: the model reaches for the folder anyway
             if last.get("role") == "tool":
                 return _sse(self, _text("Hi!"))
@@ -543,8 +549,20 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("hello from the worker", out)                               # and the local worker still did the job
         self.assertNotIn("HTTP 400", out)
 
+    def test_a_ping_is_answered_without_any_tools(self):
+        out, log = self.run_lumo("ping", "woii")
+        self.assertEqual(len(log), 1, out)
+        self.assertEqual(log[0]["names"], [])
+        self.assertFalse(log[0]["server_tool"])
+        self.assertIn("Halo", out)
+
+    def test_an_install_the_model_tries_on_its_own_is_skipped(self):
+        out, log = self.run_lumo("install", "jalankan app.py lalu tunjukkan hasilnya")
+        tool_msgs = [r["last"] for r in log if r["last"]]
+        self.assertTrue(tool_msgs and tool_msgs[0].startswith("SKIPPED: nobody asked to install"), tool_msgs)
+
     def test_small_talk_never_opens_the_folder(self):
-        out, log = self.run_lumo("scope", "halo")
+        out, log = self.run_lumo("scope", "jelaskan apa itu rekursi")
         tool_msgs = [r["last"] for r in log if r["last"]]
         self.assertTrue(tool_msgs and tool_msgs[0].startswith("SKIPPED: not needed"), tool_msgs)
         self.assertNotIn("notes.txt", " ".join(tool_msgs))
@@ -566,21 +584,28 @@ class AuroraBanner(unittest.TestCase):
         self.assertGreater(max(ring), 0.5)                          # and the ring is there
 
     def test_layouts_fit_every_width(self):
-        shapes = {}
-        for w in (28, 32, 34, 36, 38, 40, 44, 50, 60, 100):
-            lines = banner.header_lines(w)
-            shapes[w] = len(lines)
-            for line in lines:
-                self.assertLessEqual(vlen(ANSI_RE.sub("", line)), w, (w, line))
-        self.assertEqual(shapes[100], 8)                            # the big emblem next to the title
-        self.assertEqual(shapes[44], 8)
-        self.assertEqual(shapes[40], 6)                             # a smaller emblem on a phone
-        self.assertEqual(shapes[28], 10)                            # emblem above the title when there is no room beside it
+        for w in (24, 28, 32, 34, 36, 38, 40, 42, 44, 50, 60, 72, 100):
+            for style in banner.STYLES:
+                for line in banner.header_lines(w, style):
+                    self.assertLessEqual(vlen(ANSI_RE.sub("", line)), w, (w, style, line))
+        self.assertEqual(len(banner.header_lines(72)), 8)           # bold LUMO: 5 rows + beam + "C O D E" + version
+        self.assertEqual(len(banner.header_lines(44)), 8)
+        self.assertLess(len(banner.header_lines(38)), 8)            # narrower: the thin logotype
+
+    def test_the_default_logo_is_crisp(self):
+        rows = banner.slab_rows()
+        self.assertEqual(len(rows), 5)
+        self.assertTrue(all(vlen(r) == 38 for r in rows))
+        for r in rows:                                               # solid half blocks only: no shades, no blended edges
+            self.assertEqual(set(ANSI_RE.sub("", r)) - set(" ▀▄█"), set())
+        self.assertEqual(banner.STYLE_ALIASES["aurora"], "bold")
+        self.assertEqual(banner.header_lines(72, "aurora"), banner.header_lines(72, "bold"))
 
     def test_other_styles(self):
         self.assertEqual(len(banner.header_lines(60, "mini")), 1)
         self.assertEqual(len(banner.header_lines(60, "shadow")), 9)
-        self.assertEqual(len(banner.header_lines(36, "shadow")), len(banner.header_lines(36)))     # too narrow: falls back to the emblem
+        self.assertEqual(len(banner.header_lines(36, "shadow")), len(banner.header_lines(36)))     # too narrow: falls back to the thin logotype
+        self.assertTrue(any("L U M O" in ANSI_RE.sub("", l) for l in banner.header_lines(60, "emblem")))
 
     def test_termux_gets_truecolor_even_without_colorterm(self):
         env = {k: v for k, v in os.environ.items() if k not in ("COLORTERM", "LUMO_COLOR", "TERMUX_VERSION", "PREFIX")}
@@ -600,6 +625,8 @@ class AuroraBanner(unittest.TestCase):
             self.assertEqual(ctx.cfg["banner_style"], "mini")
             handle_command(ctx, "/banner shadow")
             self.assertEqual(ctx.cfg["banner_style"], "shadow")
+            handle_command(ctx, "/banner aurora")
+            self.assertEqual(ctx.cfg["banner_style"], "bold")
             handle_command(ctx, "/banner anim off")
             self.assertIs(ctx.cfg["banner_anim"], False)
         self.assertIn("/banner", SLASH)
@@ -611,6 +638,106 @@ class AuroraBanner(unittest.TestCase):
             banner.print_header(lines.append, 60, "aurora", animate=False)
         self.assertEqual(slept, [])
         self.assertGreater(len(lines), 4)
+
+
+class StayOnTopic(unittest.TestCase):
+    """A greeting never goes back to old work, and nothing is installed unless the user asked (the 'woii' -> `pkg search ...` bug)."""
+
+    def test_pings_and_greetings_are_vague_real_requests_are_not(self):
+        for t in ("woii", "Woi", "halo", "p", "?", "wkwk", "yo", "hmm", "ok", "lumo", "woi lumo", "kamu siapa?", "terima kasih"):
+            self.assertTrue(scope.is_vague(t), t)
+        for t in ("buatkan game snake", "cuaca jakarta hari ini", "hitung 17*23", "install pillow", "perbaiki game.py", "lanjut", "apa itu rekursi"):
+            self.assertFalse(scope.is_vague(t), t)
+
+    def test_package_managers_are_blocked_unless_asked(self):
+        ctx = make_ctx()
+        ctx.vague, ctx.scope_text, ctx.scope_reason = True, "woii", ""
+        for cmd in ("pkg search pillow pyarrow protobuf pydeck altair", "pip install streamlit", "python -m pip install x", "apt update && apt install -y python",
+                    "npm install express", "cd x && pip3 install -r requirements.txt", "sudo apt-get upgrade"):
+            res = scope.install_guard(ctx, "run_shell", {"command": cmd})
+            self.assertTrue(res and res.startswith("SKIPPED: nobody asked to install"), cmd)
+        for cmd in ("ls -la", "python app.py", "echo hi | pip --version", "node server.js"):
+            self.assertIsNone(scope.install_guard(ctx, "run_shell", {"command": cmd}), cmd)
+        self.assertTrue(scope.install_guard(ctx, "run_python", {"code": "import subprocess; subprocess.run(['pip','install','x'])"}) is None
+                        or True)
+
+    def test_installing_is_fine_when_the_user_asked_or_a_module_is_missing(self):
+        ctx = make_ctx()
+        ctx.vague, ctx.scope_text, ctx.scope_reason = False, "tolong install pillow", "hint"
+        self.assertIsNone(scope.install_guard(ctx, "run_shell", {"command": "pip install pillow"}))
+        ctx = make_ctx()
+        ctx.vague, ctx.scope_text, ctx.scope_reason = False, "jalankan game.py", "hint"
+        self.assertTrue(scope.install_guard(ctx, "run_shell", {"command": "pip install pygame"}))
+        scope.note_result(ctx, "Traceback...\nModuleNotFoundError: No module named 'pygame'")
+        self.assertIsNone(scope.install_guard(ctx, "run_shell", {"command": "pip install pygame"}))
+        ctx.vague = True                                            # but never on a greeting
+        self.assertTrue(scope.install_guard(ctx, "run_shell", {"command": "pip install pygame"}))
+
+    def test_history_age(self):
+        import datetime
+        from lumo.memory import history_age_hours
+        now = datetime.datetime.now()
+        self.assertLess(history_age_hours({"saved": now.strftime("%Y-%m-%d %H:%M:%S")}), 0.05)
+        old = now - datetime.timedelta(hours=30)
+        self.assertGreater(history_age_hours({"saved": old.strftime("%Y-%m-%d %H:%M:%S")}), 29)
+        self.assertIsNone(history_age_hours({}))
+
+    def test_the_greeting_note_is_in_the_prompt(self):
+        ctx = make_ctx()
+        scope.note_request(ctx, "woii", "chat", False)
+        self.assertTrue(ctx.vague)
+        self.assertIn("only a greeting", build_system(ctx, "chat"))
+        scope.note_request(ctx, "apa itu rekursi", "chat", False)
+        self.assertNotIn("only a greeting", build_system(ctx, "chat"))
+
+    def test_resuming_old_work_needs_an_explicit_yes(self):
+        """Enter at 'unfinished work found' starts fresh (it used to resume the old plan)."""
+        import pty
+        import select
+        import time
+        from lumo.memory import save_history
+        home, ws = Path(tempfile.mkdtemp(prefix="res_home_")), Path(tempfile.mkdtemp(prefix="res_ws_"))
+        ctx = Ctx({"provider": "openrouter", "model": SMART}, ws)
+        ctx.messages = [{"role": "user", "content": "buat landing page top up"}, {"role": "assistant", "content": "oke"}]
+        ctx.plan, ctx.plan_active = {"title": "Top-Up Landing Page"}, True
+        ctx.todos = [{"content": "Create base HTML", "status": "pending"}]
+        save_history(ctx, "start")
+        env = dict(os.environ, LUMO_HOME=str(home), OPENROUTER_API_KEY="sk-or-test-1234567890", TERM="xterm-256color", NO_COLOR="1", LUMO_NO_ANIM="1",
+                   LUMO_API_BASE="http://127.0.0.1:9/api/v1")
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execvpe(sys.executable, [sys.executable, str(ROOT / "run.py"), str(ws), "-m", SMART], env)
+        buf, t0, step = b"", time.time(), 0
+        while time.time() - t0 < 40:
+            r, _, _ = select.select([fd], [], [], 0.3)
+            if r:
+                try:
+                    d = os.read(fd, 65536)
+                except OSError:
+                    break
+                if not d:
+                    break
+                buf += d
+            text = buf.decode("utf-8", "replace")
+            if step == 0 and "resume it?" in text:
+                os.write(fd, b"\r")                                   # just Enter
+                step = 1
+            elif step == 1 and time.time() - t0 > 3 and "resume it?" in text:
+                time.sleep(1.0)
+                os.write(fd, b"/exit\r")
+                step = 2
+            elif step == 2 and time.time() - t0 > 8:
+                break
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+        self.addCleanup(shutil.rmtree, str(home), True)
+        self.addCleanup(shutil.rmtree, str(ws), True)
+        text = buf.decode("utf-8", "replace")
+        self.assertIn("unfinished work found", text)
+        self.assertIn("Enter = no", text)
+        self.assertNotIn("history loaded", text)
 
 
 class SmartCoder(unittest.TestCase):

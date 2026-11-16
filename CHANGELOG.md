@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.11.2] - 2026-11-16
+
+### Fixed
+- **A greeting no longer goes back to old work.** A ping or greeting ("woii", "halo", "p", "?", "wkwk", "kamu siapa?") is answered in one or two friendly sentences with no tools at all. Before, the restored conversation made the model carry on with the old task and it ran `pkg search pillow pyarrow protobuf pydeck altair`.
+- **Nothing is installed unless asked.** Package managers (`pkg`, `apt`, `pip`, `python -m pip`, `npm`, `yarn`, `pnpm`, `cargo`, `gem` ... for install, search, update, upgrade, remove) are skipped with an explanation unless the message asks for it ("install", "pasang", "pip", "dependencies" ...) or a program that the user asked for stopped on a missing module in this very turn. A greeting never installs anything.
+- **"Unfinished work found in history" no longer resumes by default.** The question is now `Enter = no, a new start · y = yes`; work older than 24 hours is not even offered (`/resume` still goes back to it), and a finished conversation is only continued automatically within 3 hours of the last message (`auto_resume_hours`, `resume_ask_hours` in the config).
+
+### Changed
+- **A clear, crisp logo.** The ring emblem was too low-resolution and looked blurry on a phone. The default banner is now a big bold `LUMO` in solid rounded letters (half blocks, hard edges, aurora gradient), a beam of light with a gold spark, `C O D E` with the tagline, and the version. Styles: `/banner bold` (default), `thin` (thin double-line letters), `emblem` (the ring), `shadow` (shadow letters, 41+ columns), `mini` (one line).
+
 ## [1.11.1] - 2026-11-15
 
 ### Changed

@@ -132,7 +132,7 @@ HELP = """
   /checklimit [probe]         how much of the AI allowance is left
   /rotate [auto|on|off|add id]  automatic fallback models
   /multiagent [on|off]          smart model + light worker (unpacks files, runs tests) · worker [id|auto]
-  /banner [aurora|shadow|mini]  show the banner again · /banner anim on|off
+  /banner [bold|thin|emblem|shadow|mini]  show the banner again · /banner anim on|off
   /mode auto|chat|code        how the AI works
   /research on|off · /status · /abilities
   /search [kind] <query>        search the web now (kinds: news code qa docs packages academic wiki)

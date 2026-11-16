@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 
-VERSION = "1.11.1"
+VERSION = "1.11.2"
 
 
 # Older installs used AXION_* / AXON_* variable names; they still work when the LUMO_* one is not set.

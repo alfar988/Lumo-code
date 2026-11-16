@@ -39,6 +39,58 @@ _SMALLTALK = re.compile(
 _NO_FILES = re.compile(r"\b(tanpa|jangan|don'?t|do not|no need to)\b.{0,24}\b(baca|read|buka|open|lihat|cek|file|folder|scan)\b", re.I)
 
 
+# A ping, an interjection, a laugh, a bare "ok": nothing to act on. (Typed with doubled letters: "woii", "haloo", "yooo".)
+_PING = re.compile(
+    r"^\s*(?:w+o+i+|w+o+y+|w+o+e+|w+e+i+|w+e+h+|o+i+|o+y+|y+o+|h+o+i+|h+e+y+|h+e+i+|h+a+l+o+|h+a+i+|h+i+|h+e+l+l+o+|p+|t+e+s+t*|ping|bro|bang|sis|kak|min|bot|ai|lumo|lu|"
+    r"assalamu\W?alaikum|permisi|misi|ok+e*|sip|siap|h+m+|iya|ya+|yup|nah|nih|wk(?:wk)*\w*|ha(?:ha)+\w*|he(?:he)+\w*|lol|anj\w*|njir|wah|waduh|aduh|loh|lho|lah|kok|hah|e+h+|ha|gimana|gmn|apa|kenapa|napa)"
+    r"(?:\s+(?:lumo|lu|bro|bang|kak|min|bot|ai))?[\s!?.,~]*$", re.I)
+
+
+def is_vague(text):
+    """A greeting, a ping or just punctuation: nothing to act on. The answer is one friendly line and a question; no tools, and no going back to old work."""
+    t = (text or "").strip()
+    if not t:
+        return True
+    if not re.search(r"[^\W_]", t, re.U):                       # only punctuation or emoji
+        return True
+    return bool(_PING.match(t)) or is_smalltalk(t)
+
+
+# Package managers: installing, searching or updating software is never done on the model's own initiative.
+_PKG = re.compile(
+    r"(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+)(?:pkg|apt(?:-get)?|apt-cache|dpkg|pip3?|pipx|npm|npx|yarn|pnpm|cargo|gem|brew|conda|poetry|composer|go\s+(?:get|install))\s+"
+    r"(?:-{1,2}\S+\s+)*(?:install|i|add|search|update|upgrade|full-upgrade|remove|uninstall|download|build|reinstall|autoremove)\b|\bpython3?\s+-m\s+pip\b", re.I)
+_INSTALL_WORDS = re.compile(r"\b(install|instal|menginstal|pasang|memasang|pip|pkg|apt|npm|yarn|pnpm|setup|set up|requirements?|dependenc\w*|librar(?:y|ies)|modul|module|paket|package|packages|upgrade|perbarui paket)\b", re.I)
+_MISSING = re.compile(r"ModuleNotFoundError|No module named|ImportError: cannot import|Cannot find module|MODULE_NOT_FOUND|command not found|: not found\b|is not installed", re.I)
+
+
+def install_guard(ctx, name, args):
+    """None when the call may go ahead; otherwise the tool result that replaces it. Package managers run only when the user asked for it, or when a program
+    that the user asked for stopped on a missing piece in this very turn."""
+    if name not in ("run_shell", "run_python"):
+        return None
+    code = str(args.get("command") or args.get("code") or args.get("script") or "")
+    if not _PKG.search(code) and not (name == "run_python" and re.search(r"\bpip\s+install\b|-m\s+pip\b", code)):
+        return None
+    if getattr(ctx, "ma_depth", 0):
+        return None
+    if getattr(ctx, "vague", False):
+        pass                                                   # a greeting never installs anything
+    elif _INSTALL_WORDS.search(getattr(ctx, "scope_text", "") or ""):
+        return None                                            # the user asked
+    elif ctx.turn.get("missing_dep") and getattr(ctx, "scope_reason", "x"):
+        return None                                            # the user's own task stopped on a missing module: fixing that is part of the task
+    ctx.turn["scope_blocked"] = ctx.turn.get("scope_blocked", 0) + 1
+    return ("SKIPPED: nobody asked to install anything. Do not run package managers (pkg, apt, pip, npm ...) on your own, and do not search for packages. "
+            "Do what the message asks with what is already there. If a program you were asked to run stops on something missing, say what is missing and ask.")
+
+
+def note_result(ctx, result):
+    """Remember that a tool result in this turn reported a missing module or command (the only other reason to install)."""
+    if result and _MISSING.search(result[:4000]):
+        ctx.turn["missing_dep"] = True
+
+
 def is_smalltalk(text):
     t = (text or "").strip()
     return bool(t) and len(t) <= 60 and bool(_SMALLTALK.match(t))
@@ -77,7 +129,8 @@ def explore_reason(ctx, text, intent, continuation):
 
 def note_request(ctx, text, intent, continuation):
     """Called once at the start of every turn."""
-    ctx.scope_reason = explore_reason(ctx, text, intent, continuation)
+    ctx.vague = is_vague(text) and not continuation
+    ctx.scope_reason = "" if ctx.vague else explore_reason(ctx, text, intent, continuation)
     ctx.scope_text = (text or "")
 
 

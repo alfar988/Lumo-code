@@ -76,8 +76,9 @@ class Banner(unittest.TestCase):
 
     def test_header_names_the_product_and_version(self):
         text = "\n".join(ANSI_RE.sub("", l) for l in banner.header_lines(70))
-        self.assertIn("L U M O", text)                 # the title is letter-spaced in the default style ...
-        self.assertIn("C O D E", text)
+        self.assertIn("C O D E", text)                 # the default style: bold LUMO letters, then "C O D E" and the tagline
+        thin = "\n".join(ANSI_RE.sub("", l) for l in banner.header_lines(70, "emblem"))
+        self.assertIn("L U M O", thin)                 # the emblem style spells it out
         self.assertIn("AI agent for the terminal", text)
         self.assertRegex(text, r"v\d+\.\d+\.\d+")
         plain = "\n".join(ANSI_RE.sub("", l) for l in banner.header_lines(70, "mini"))

@@ -161,4 +161,7 @@ def build_system(ctx, phase="build"):
         parts.append("## Current request (your only task)\n" + (task if len(task) <= 900 else task[:900] + "…") + "\n"
                      "Work on this and nothing else. Other files and projects in the workspace belong to earlier work: leave them alone. "
                      "Automatic [system] messages (verification, UI review, reminders) concern only the files you change for this request.")
+    if phase == "chat" and getattr(ctx, "vague", False):
+        parts.append("## This message\nIt is only a greeting, a ping or an interjection. Answer in one or two friendly sentences in the user's language and ask what they need. "
+                     "Do not continue earlier work, do not bring up earlier tasks or files, and do not call tools.")
     return "\n\n".join(parts)

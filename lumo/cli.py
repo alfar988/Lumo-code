@@ -13,11 +13,11 @@ import time
 from pathlib import Path
 
 from lumo.agent import run_turn
-from lumo.banner import card_lines, print_header, STYLES
+from lumo.banner import card_lines, print_header, STYLE_ALIASES, STYLES
 from lumo.client import NETSTATE
 from lumo.commands import cmd_resume, handle_command, SLASH
 from lumo.config import APP_DIR, DEFAULT_MODEL, HISTORY_FILE, HOME_DIR, ROUTER_MODEL, SKILLS_DIR, VERSION
-from lumo.memory import auto_restore, log_event, peek_history, repair_history, save_history
+from lumo.memory import auto_restore, history_age_hours, log_event, peek_history, repair_history, save_history
 from lumo import multiagent, providers, safelimit
 from lumo.models import auto_pick_model, models_cmd, rotation_enabled, start_refresher
 from lumo.provider_ui import choose_provider
@@ -136,8 +136,9 @@ def run_user_shell(ctx, cmd):
 
 
 def banner_style(ctx):
-    style = str(ctx.cfg.get("banner_style", "aurora"))
-    return style if style in STYLES else "aurora"
+    raw = str(ctx.cfg.get("banner_style", "bold"))
+    style = STYLE_ALIASES.get(raw, raw)
+    return style if style in STYLES else "bold"
 
 
 def banner(ctx):
@@ -173,6 +174,7 @@ def banner(ctx):
 def cmd_banner(ctx, arg):
     """/banner [aurora|shadow|mini] [anim on|off]: show the banner again; the style is remembered."""
     sub = (arg[0].lower() if arg else "")
+    sub = STYLE_ALIASES.get(sub, sub)
     if sub in STYLES:
         ctx.cfg["banner_style"] = sub
         save_config(ctx.cfg)
@@ -298,25 +300,31 @@ def main():
     st = peek_history(ctx)
     if st and st.get("messages") and not args.prompt and not args.cont and sys.stdin.isatty():
         pend = [t for t in (st.get("todos") or []) if t.get("status") != "completed"]
+        age = history_age_hours(st)
         if pend or str(st.get("reason", "")).startswith(("error", "empty", "limit", "rotation")):
-            out()
-            out("  " + warn("↺ ") + "unfinished work found in history" +
-                dim(" (%d messages%s)" % (len(st["messages"]), (", plan: " + st["plan"]["title"]) if st.get("plan") else "")))
-            try:
-                ans = input(rl("  " + acc("▍") + " " + dim("resume now? [Y/n] › "))).strip().lower()
-            except EOFError:
-                ans = "n"
-            if ans in ("", "y", "ya", "yes"):
-                r = cmd_resume(ctx)
-                if r:
-                    first_prompt = r[7:]
-        elif ctx.cfg.get("auto_resume", True):                       # finished work: keep the conversation anyway, so Lumo remembers after a restart
-            if auto_restore(ctx):
+            if age is None or age <= float(ctx.cfg.get("resume_ask_hours", 24)):
+                out()
+                out("  " + warn("↺ ") + "unfinished work found in history" +
+                    dim(" (%d messages%s)" % (len(st["messages"]), (", plan: " + st["plan"]["title"]) if st.get("plan") else "")))
+                try:
+                    ans = input(rl("  " + acc("▍") + " " + dim("resume it? Enter = no, a new start · y = yes › "))).strip().lower()
+                except EOFError:
+                    ans = "n"
+                if ans in ("y", "ya", "yes"):                                   # only an explicit yes goes back to old work
+                    r = cmd_resume(ctx)
+                    if r:
+                        first_prompt = r[7:]
+            else:
+                out("  " + dim("↺ older unfinished work is saved in history/ · /resume goes back to it"))
+        elif ctx.cfg.get("auto_resume", True) and (age is None or age <= float(ctx.cfg.get("auto_resume_hours", 3))):
+            if auto_restore(ctx):                                               # finished work, same session: keep the conversation so Lumo remembers after a restart
                 from lumo.compact import compact_archive, est_tokens
                 if len(ctx.messages) > 60 or est_tokens(ctx.messages) > 30000:
                     compact_archive(ctx, quiet=True)                   # a long chat is archived (nothing is lost: history/archive/), the newest messages stay
                 out("  " + ok("↺ continued your last conversation") + dim(" (%d messages, saved %s) · new topic: /clear · stop remembering: /remember off" % (
                     len(ctx.messages), st.get("saved", "earlier"))))
+        else:
+            out("  " + dim("↺ a new start. The earlier conversation is saved in history/ · /resume goes back to it"))
 
     if args.cont and load_session(ctx, "last"):
         out("  " + ok("✓ resumed the last session (%d messages)" % len(ctx.messages)))

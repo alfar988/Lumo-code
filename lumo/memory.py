@@ -169,6 +169,16 @@ def auto_restore(ctx):
     return d
 
 
+def history_age_hours(st):
+    """Hours since the saved conversation was written (None when unknown)."""
+    try:
+        import datetime
+        t = datetime.datetime.strptime(str((st or {}).get("saved", ""))[:19], "%Y-%m-%d %H:%M:%S")
+        return max(0.0, (datetime.datetime.now() - t).total_seconds() / 3600.0)
+    except Exception:
+        return None
+
+
 def peek_history(ctx):
     try:
         return json.loads((hist_dir(ctx) / "state.json").read_text(encoding="utf-8"))
