@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.12.0] - 2026-11-17
+
+### Added
+- **`/multiagent test`**: a real check of the whole multi-agent machinery against your real provider, about 4 requests. (A) does OpenRouter accept the `openrouter:subagent` server tool for your smart model (status, worker model, the answer, usage fields), (B) can the light model read real files through the local worker, (C) can it condense an error. Prints PASS/FAIL lines with the reason and saves them in `history/multiagent-test.txt`, so a failure can be copied and sent.
+- **A request budget for the worker.** Every worker request counts toward the daily limit of a free model, so: at most 3 worker jobs and 8 worker requests per task (`/multiagent budget jobs|reqs|digest|low <n>`, `/multiagent budget reset`), at most 6 model turns per job (the worker is told to batch its tools), identical `extract` jobs are answered from a session cache until a file changes (tests are never cached), and the end-of-task line shows `N req (worker M)`. `/multiagent status` shows the budget, this task's use and the free requests left today.
+- **Automatic pause.** When a free smart model has 10 or fewer requests left today, the worker stops by itself: `delegate` disappears from the tool list, the server tool and the multi-agent prompt are left out, you are told once, and everything resumes when the limit resets (00:00 UTC).
+
+### Changed
+- **Error digests are rarer.** Only failures with at least 3500 characters and 30 lines are condensed by the light model (before: 1800 characters), the same error is condensed once, at most 2 per task.
+- **Big battles render much faster (lumovideo 1.3.1).** A sound is now synthesised once per variant instead of once per shot: an 86-actor, 360-shot battle compiled in 54 s and now takes about 5 s, with identical sound.
+
 ## [1.11.2] - 2026-11-16
 
 ### Fixed

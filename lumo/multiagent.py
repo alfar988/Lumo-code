@@ -18,21 +18,28 @@ If OpenRouter refuses the server tool for a model, Lumo drops it for the session
 """
 
 import json
+import os
 import re
+import shutil
 import time
 
 from lumo import providers
-from lumo.config import ROUTER_MODEL
-from lumo.state import ApiError, NoToolsError, save_config, ToolError
+from lumo.config import HISTORY_DIRNAME, ROUTER_MODEL
+from lumo.state import ApiError, bump_req, is_free_model, NoToolsError, req_today, save_config, ToolError
 from lumo.ui import acc, bold, clip, dim, err, faint, ok, out, short_model, Spinner, tw, warn
 from lumo.util import cap
 
 
 SERVER_TOOL_TYPE = "openrouter:subagent"
 
-DIGEST_MIN_CHARS = 1800        # a failing check with less output than this is already short enough to read
-DIGESTS_PER_TURN = 3
-WORKER_MAX_STEPS = 10
+# The request budget. Every worker request counts toward the daily limit of a free model, so the worker is used sparingly:
+DIGEST_MIN_CHARS = 3500        # a failing check is condensed only when its output is really long (shorter output is already easy to read)
+DIGEST_MIN_LINES = 30
+DIGESTS_PER_TURN = 2
+JOBS_PER_TURN = 3              # delegate jobs per task
+WORKER_REQS_PER_TURN = 8       # worker requests (all jobs and digests together) per task
+LOW_QUOTA = 10                 # free requests left today at which the worker pauses and the smart model works alone
+WORKER_MAX_STEPS = 6
 WORKER_OUT_TOKENS = 4000
 
 SERVER_INSTRUCTIONS = (
@@ -41,13 +48,14 @@ SERVER_INSTRUCTIONS = (
     "If something the task asks for is not in the text, write 'not in the text'. Keep the answer short and structured."
 )
 
-ENV_LINE = "Workspace: %s. Answer in the language of the task. Keep the final report short."
+ENV_LINE = ("Workspace: %s. Answer in the language of the task. Keep the final report short. Every model turn costs a request: call all the tools you need in ONE response when "
+            "they do not depend on each other, and give your final report within %d model turns.")
 
 ROLES = {
     "extract": {
         "label": "unpack and read files",
         "tools": ("extract_archive", "list_dir", "read_file", "find_files", "search_files"),
-        "steps": 10,
+        "steps": 6,
         "system": (
             "You are the light worker of Lumo Code. A smarter model gave you ONE bounded job on files: unpack an archive, find files, "
             "read them, and report what is in them. You never write code and never answer the user's questions; you collect facts.\n"
@@ -60,7 +68,7 @@ ROLES = {
     "test": {
         "label": "run checks and report errors",
         "tools": ("run_shell", "run_python", "verify_files", "read_file", "list_dir", "find_files", "search_files"),
-        "steps": 8,
+        "steps": 6,
         "system": (
             "You are the light worker of Lumo Code. A smarter model asked you to TEST something and report errors. You run the check "
             "or test command named in the task (if none is named, the obvious one for the project: python -m unittest / pytest, npm test, "
@@ -97,6 +105,27 @@ def provider_id(ctx):
 
 def smart_model(ctx):
     return ctx.cur_model()
+
+
+def budget(ctx):
+    c = ctx.cfg
+    return {"jobs": int(c.get("ma_max_jobs", JOBS_PER_TURN)), "reqs": int(c.get("ma_max_worker_reqs", WORKER_REQS_PER_TURN)),
+            "digest_min": int(c.get("ma_digest_min", DIGEST_MIN_CHARS)), "digests": int(c.get("ma_max_digests", DIGESTS_PER_TURN))}
+
+
+def quota_left(ctx):
+    """Free requests left today when the smart model is a free model (None when it is not, so there is no daily limit to protect)."""
+    if not is_free_model(ctx.cfg.get("model") or ""):
+        return None
+    return max(0, int(ctx.cfg.get("free_daily") or 50) - req_today(ctx))
+
+
+def paused_reason(ctx):
+    """'' while the worker may run; otherwise why it is paused (the daily free quota is almost used up)."""
+    left = quota_left(ctx)
+    if left is not None and left <= int(ctx.cfg.get("ma_low_quota", LOW_QUOTA)):
+        return "only %d free request%s left today" % (left, "" if left == 1 else "s")
+    return ""
 
 
 LIGHT_NAME = re.compile(r"nano|mini|lite|small|haiku|flash|a[0-9]b|\b(?:3|4|7|8|9|12|14|20|24|27|30|32)b\b|oss-20b|instant", re.I)
@@ -229,7 +258,7 @@ def worker_is_distinct(ctx):
 # ---------------------------------------------------------------------------
 def server_tool_active(ctx):
     return (enabled(ctx) and provider_id(ctx) == "openrouter" and ctx.cfg.get("multiagent_server", True) is not False
-            and not getattr(ctx, "ma_server_off", False))
+            and not getattr(ctx, "ma_server_off", False) and not paused_reason(ctx))
 
 
 def server_tools(ctx, prov, model):
@@ -263,6 +292,12 @@ def server_rejected(ctx, body, code, low):
 
 
 def flush_notice(ctx):
+    why = paused_reason(ctx) if enabled(ctx) else ""
+    if why and not getattr(ctx, "ma_paused_told", False):
+        ctx.ma_paused_told = True
+        out("  " + warn("! ") + dim("multi-agent worker paused: %s. The smart model works alone until the limit resets (00:00 UTC)." % why))
+    elif not why:
+        ctx.ma_paused_told = False
     note = getattr(ctx, "ma_note", "")
     if note:
         ctx.ma_note = ""
@@ -273,11 +308,11 @@ def flush_notice(ctx):
 #  link 2: the local worker
 # ---------------------------------------------------------------------------
 def hidden_tools(ctx):
-    return set() if enabled(ctx) else {"delegate"}
+    return set() if enabled(ctx) and not paused_reason(ctx) else {"delegate"}
 
 
 def prompt_block(ctx, phase):
-    if not enabled(ctx) or phase not in ("build", "chat"):
+    if not enabled(ctx) or phase not in ("build", "chat") or paused_reason(ctx):
         return ""
     light = light_model(ctx)
     lines = ["## Multi-agent mode (on)",
@@ -312,6 +347,7 @@ def _block_shell(cmd):
 def _note_usage(ctx, usage):
     st = ctx.ma_stats
     st["reqs"] += 1
+    ctx.turn["ma_reqs"] = ctx.turn.get("ma_reqs", 0) + 1
     if usage:
         n = (usage.get("prompt_tokens", 0) or 0) + (usage.get("completion_tokens", 0) or 0)
         st["tokens"] += n
@@ -335,6 +371,18 @@ def run_worker(ctx, role, task):
         raise ToolError("the task is too short: the worker does not see this chat. Say what to open or run and what you need back.")
     if getattr(ctx, "ma_depth", 0):
         raise ToolError("a worker cannot delegate again.")
+    why = paused_reason(ctx)
+    if why:
+        return "SKIPPED: the worker is paused (%s). Do this job yourself with the normal tools." % why
+    b = budget(ctx)
+    if ctx.turn.get("ma_jobs", 0) >= b["jobs"]:
+        return "SKIPPED: this task already used %d worker jobs (the limit protects the daily request quota). Do the rest yourself." % b["jobs"]
+    if ctx.turn.get("ma_reqs", 0) >= b["reqs"]:
+        return "SKIPPED: this task already used %d worker requests. Do the rest yourself." % b["reqs"]
+    ckey = (role, " ".join(task.split()).lower(), len(ctx.changes))
+    cache = ctx.__dict__.setdefault("ma_cache", {})
+    if role == "extract" and ckey in cache:
+        return cache[ckey] + "\n(same job as before: answered from the session cache, no new request)"
     from lumo.client import stream_chat
     from lumo.toolcalls import fix_args, normalize_tool_name, parse_text_tool_calls, repair_tool_args, sanitize_messages, slim_schemas, strip_think
     from lumo.toolrun import exec_tool, show_result
@@ -343,19 +391,20 @@ def run_worker(ctx, role, task):
     model = light_model(ctx)
     names = [n for n in spec["tools"] if n in TOOLS]
     schemas = slim_schemas([TOOLS[n]["schema"] for n in names], tight=True)
-    system = spec["system"] + "\n" + ENV_LINE % ctx.ws
-    msgs = [{"role": "user", "content": task}]
     max_steps = int(ctx.cfg.get("worker_steps", spec["steps"]))
+    system = spec["system"] + "\n" + ENV_LINE % (ctx.ws, max_steps)
+    msgs = [{"role": "user", "content": task}]
     max_tok = int(ctx.cfg.get("worker_max_tokens", WORKER_OUT_TOKENS))
     t0, steps, final, errors = time.time(), 0, "", 0
     ctx.ma_stats["jobs"] += 1
+    ctx.turn["ma_jobs"] = ctx.turn.get("ma_jobs", 0) + 1
     out("  " + acc("◈ ") + bold("worker") + dim(" · %s · %s" % (role, short_model(model))))
     out("    " + dim(clip(task.replace("\n", " "), tw() - 8)))
     ctx.ma_depth += 1
     try:
         while True:
             steps += 1
-            final_round = steps > max_steps
+            final_round = steps > max_steps or (steps > 1 and ctx.turn.get("ma_reqs", 0) >= b["reqs"])
             sanitize_messages(msgs)
             sp = Spinner("worker thinking")
             sp.start()
@@ -421,7 +470,10 @@ def run_worker(ctx, role, task):
     if not final:
         final = "(the worker returned no report after %d steps; do this job yourself)" % steps
     out("    " + faint("┊ ") + ok("✓ ") + dim("report ready · %d step%s · %ds" % (steps, "" if steps == 1 else "s", secs)))
-    return "WORKER REPORT (light model %s, role %s, %d steps). A reading by a small model, not proof:\n%s" % (model, role, steps, cap(final.strip(), 7000))
+    report = "WORKER REPORT (light model %s, role %s, %d steps). A reading by a small model, not proof:\n%s" % (model, role, steps, cap(final.strip(), 7000))
+    if role == "extract" and final and not final.startswith("(the worker returned no report"):
+        cache[ckey] = report
+    return report
 
 
 def call_light(ctx, system, user, max_tokens=700):
@@ -441,11 +493,18 @@ def call_light(ctx, system, user, max_tokens=700):
 
 
 def digest_failure(ctx, name, args, res):
-    """A long failing check is read by the light model first: the smart model gets the errors in a few lines plus the tail of the raw output."""
+    """A really long failing check is read by the light model first: the smart model gets the errors in a few lines plus the tail of the raw output.
+    Short output is left alone (it is already easy to read), each distinct error is condensed once, and the number per task is capped."""
     from lumo import safelimit
-    if (not enabled(ctx) or getattr(ctx, "ma_depth", 0) or len(res) < DIGEST_MIN_CHARS or safelimit.maximum()
-            or ctx.turn.get("digests", 0) >= DIGESTS_PER_TURN or not worker_is_distinct(ctx)):
+    b = budget(ctx)
+    if (not enabled(ctx) or getattr(ctx, "ma_depth", 0) or len(res) < b["digest_min"] or res.count("\n") < DIGEST_MIN_LINES or safelimit.maximum()
+            or ctx.turn.get("digests", 0) >= b["digests"] or ctx.turn.get("ma_reqs", 0) >= b["reqs"] or paused_reason(ctx) or not worker_is_distinct(ctx)):
         return res
+    sig = hash(res[-400:])
+    seen = ctx.__dict__.setdefault("ma_digested", set())
+    if sig in seen:
+        return res                                                       # the same failure again: the smart model already has the reading
+    seen.add(sig)
     ctx.turn["digests"] = ctx.turn.get("digests", 0) + 1
     cmd = args.get("command") or args.get("script") or name
     sp = Spinner("light model reads the errors")
@@ -459,6 +518,126 @@ def digest_failure(ctx, name, args, res):
     out("  " + faint("◈ ") + dim("errors condensed by %s" % short_model(light_model(ctx))))
     return ("[light-model digest of this failure, read by %s; if it looks wrong trust the raw output below]\n%s\n\n[raw output, last part]\n%s"
             % (light_model(ctx), text[:1800], res[-3000:]))
+
+
+# ---------------------------------------------------------------------------
+#  /multiagent test: a real check of the whole machinery, a handful of requests
+# ---------------------------------------------------------------------------
+SELFTEST_TEXT = "Order 12 shipped on day 3 with 4 items; refund 7."
+SELFTEST_TRACE = ("Traceback (most recent call last):\n  File \"app.py\", line 3, in f\n    int(\"x\")\n"
+                  "ValueError: invalid literal for int() with base 10: 'x'\n[exit code 1]")
+
+
+def _post_json(ctx, url, body, headers, timeout=120):
+    """One non-streaming request; returns (status, parsed json or {}, error message)."""
+    import urllib.error
+    import urllib.request
+    headers = dict(headers, Accept="application/json")
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+    status, data, msg = 0, {}, ""
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            status = r.status
+            data = json.loads(r.read().decode("utf-8", "replace") or "{}")
+    except urllib.error.HTTPError as e:
+        status = e.code
+        try:
+            data = json.loads(e.read().decode("utf-8", "replace") or "{}")
+            msg = str((data.get("error") or {}).get("message") or "")[:300]
+        except Exception:
+            msg = ""
+    except Exception as e:
+        msg = str(e)[:300]
+    bump_req(ctx)
+    return status, data, msg
+
+
+def selftest(ctx):
+    """Runs the real thing against the real provider and prints a short report you can copy: (A) does OpenRouter accept the subagent server tool for the
+    smart model, (B) can the light model work on files through the local worker, (C) can it condense an error. Uses about 4 requests."""
+    from lumo.client import build_request
+    smart, light, prov = smart_model(ctx), light_model(ctx), providers.active(ctx.cfg)
+    out("  " + acc("◈ ") + bold("multi-agent self-test") + dim("  smart %s · light %s · %s" % (clip(smart, 28), clip(light, 28), prov["name"])))
+    out("    " + dim("about 4 requests; on free models they count toward the daily limit"))
+    rows = []
+    was_mode, was_off, was_turn, reqs0 = ctx.cfg.get("multiagent"), getattr(ctx, "ma_server_off", False), ctx.turn, ctx.session_reqs
+    ctx.cfg["multiagent"] = True                                         # the machinery is tested even when the mode is off
+    ctx.ma_server_off = False
+    ctx.turn = dict(was_turn, ma_jobs=0, ma_reqs=0, digests=0)
+    try:
+        # A. the server tool
+        if prov["id"] == "openrouter":
+            try:
+                ctx.cur_phase = "build"
+                noop = {"type": "function", "function": {"name": "noop", "description": "unused", "parameters": {"type": "object", "properties": {}}}}
+                _p, url, body, headers = build_request(ctx, smart, [{"role": "user", "content":
+                    "Use the subagent tool exactly once: give it the text below and ask it to extract every number. Then reply with only those numbers, separated by commas.\n"
+                    "Text: " + SELFTEST_TEXT}], [noop], 400, False)
+                body["tools"] = [t for t in body.get("tools", []) if t.get("type") == SERVER_TOOL_TYPE]
+                sent_model = (body["tools"][0]["parameters"].get("model") if body["tools"] else None)
+                if not body["tools"]:
+                    rows.append((False, "server tool", "not added to the request (paused, or the worker is the random router): /multiagent worker <id>"))
+                else:
+                    status, data, msg = _post_json(ctx, url, body, headers)
+                    if status == 200:
+                        choice = (data.get("choices") or [{}])[0]
+                        text = str((choice.get("message") or {}).get("content") or "").strip()
+                        usage = data.get("usage") or {}
+                        extra = [k for k in usage if "tool" in k.lower() or "server" in k.lower()]
+                        good = all(n in text for n in ("12", "3", "4", "7"))
+                        rows.append((bool(text), "server tool openrouter:subagent",
+                                     "accepted (HTTP 200, worker %s). Answer: %s%s%s" % (short_model(sent_model or ""), clip(text.replace("\n", " "), 60) or "(empty)",
+                                                                                      "" if good else "  [unexpected answer]", ("  usage: " + ",".join(extra)) if extra else "")))
+                    elif status == 429:
+                        rows.append((False, "server tool", "rate limited (HTTP 429): %s. Try again later." % (msg or "daily or per-minute limit")))
+                    else:
+                        rows.append((False, "server tool", "refused (HTTP %s): %s  → /multiagent server off keeps the local worker only" % (status or "?", msg or "no message")))
+            except Exception as e:
+                rows.append((False, "server tool", "error: %s" % clip(str(e), 120)))
+        else:
+            rows.append((True, "server tool", "skipped: openrouter:subagent exists only on OpenRouter (current provider: %s)" % prov["name"]))
+
+        # B. the local worker on real files
+        d = ctx.ws / HISTORY_DIRNAME / ("selftest-%d" % int(time.time()))
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "a.txt").write_text("alpha-4821\n", encoding="utf-8")
+            (d / "b.txt").write_text("bravo-7730\n", encoding="utf-8")
+            rel = os.path.relpath(str(d), str(ctx.ws))
+            res = run_worker(ctx, "extract", "List the files in the folder %s and report the exact content of each file." % rel)
+            good = "4821" in res and "7730" in res
+            rows.append((good, "local worker (extract)", "read both files correctly" if good else clip(res.replace("\n", " "), 140)))
+        except Exception as e:
+            rows.append((False, "local worker (extract)", "error: %s" % clip(str(e), 120)))
+        finally:
+            shutil.rmtree(str(d), ignore_errors=True)
+
+        # C. condensing an error
+        try:
+            text = call_light(ctx, DIGEST_SYSTEM, "Command: python app.py\n\nOutput:\n" + SELFTEST_TRACE, 400)
+            good = bool(text) and ("ValueError" in text or "app.py" in text)
+            rows.append((good, "error digest", ("condensed: " + clip(text.replace("\n", " "), 80)) if text else "the light model returned nothing"))
+        except Exception as e:
+            rows.append((False, "error digest", "error: %s" % clip(str(e), 120)))
+    finally:
+        ctx.cfg["multiagent"] = was_mode
+        ctx.ma_server_off = was_off
+        ctx.turn = was_turn
+    used = ctx.session_reqs - reqs0
+    lines = []
+    for good, title, detail in rows:
+        out("  " + (ok("✓ ") if good else err("✗ ")) + bold(title) + dim("  " + detail))
+        lines.append("%s %s: %s" % ("PASS" if good else "FAIL", title, detail))
+    passed = sum(1 for r in rows if r[0])
+    out("  " + dim("%d/%d passed · %d request%s used" % (passed, len(rows), used, "" if used == 1 else "s")))
+    try:
+        d = ctx.ws / HISTORY_DIRNAME
+        d.mkdir(parents=True, exist_ok=True)
+        head = "Lumo multi-agent self-test | smart %s | light %s | provider %s | %s" % (smart, light, prov["id"], time.strftime("%Y-%m-%d %H:%M:%S"))
+        (d / "multiagent-test.txt").write_text(head + "\n" + "\n".join(lines) + "\n%d/%d passed\n" % (passed, len(rows)), encoding="utf-8")
+        out("  " + dim("saved in history/multiagent-test.txt · copy the lines above if something failed"))
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -501,7 +680,16 @@ def show_status(ctx):
     st = ctx.ma_stats
     if st["jobs"] or st["reqs"]:
         out("    " + dim("session %d worker job%s · %d request%s · %d tokens" % (st["jobs"], "" if st["jobs"] == 1 else "s", st["reqs"], "" if st["reqs"] == 1 else "s", st["tokens"])))
-    out("    " + dim("/multiagent off · smart [id|auto] · worker [id|auto] · server on|off"))
+    b = budget(ctx)
+    out("    " + dim("per task: up to %d worker jobs · %d worker requests · errors condensed from %d characters" % (b["jobs"], b["reqs"], b["digest_min"])))
+    jobs, reqs = ctx.turn.get("ma_jobs", 0), ctx.turn.get("ma_reqs", 0)
+    if jobs or reqs:
+        out("    " + dim("this task: %d job%s · %d worker request%s" % (jobs, "" if jobs == 1 else "s", reqs, "" if reqs == 1 else "s")))
+    left = quota_left(ctx)
+    if left is not None:
+        why = paused_reason(ctx)
+        out("    " + dim("free requests left today: %d" % left) + ((" " + warn("· worker paused")) if why else ""))
+    out("    " + dim("/multiagent off · smart · worker · server on|off · budget · test"))
 
 
 def cmd_multiagent(ctx, arg):
@@ -566,6 +754,24 @@ def cmd_multiagent(ctx, arg):
             ctx.ma_auto = None
             save_config(ctx.cfg)
             out("  " + ok("✓ smart model: ") + want)
+    elif sub == "budget":
+        keys = {"jobs": "ma_max_jobs", "reqs": "ma_max_worker_reqs", "digest": "ma_digest_min", "low": "ma_low_quota"}
+        if len(arg) > 1 and arg[1].lower() == "reset":
+            for k in keys.values():
+                ctx.cfg.pop(k, None)
+            save_config(ctx.cfg)
+        elif len(arg) > 2 and arg[1].lower() in keys and arg[2].isdigit():
+            ctx.cfg[keys[arg[1].lower()]] = int(arg[2])
+            save_config(ctx.cfg)
+        b = budget(ctx)
+        out("  " + acc("◈ ") + bold("worker budget") + dim("  (protects your daily request quota)"))
+        out("    " + dim("jobs per task      ") + str(b["jobs"]) + dim("   /multiagent budget jobs <n>"))
+        out("    " + dim("requests per task  ") + str(b["reqs"]) + dim("   /multiagent budget reqs <n>"))
+        out("    " + dim("condense errors    ") + dim("from ") + str(b["digest_min"]) + dim(" characters   /multiagent budget digest <n>"))
+        out("    " + dim("pause when         ") + dim("%d free requests are left   /multiagent budget low <n>" % int(ctx.cfg.get("ma_low_quota", LOW_QUOTA))))
+        out("    " + dim("back to defaults: /multiagent budget reset"))
+    elif sub == "test":
+        selftest(ctx)
     elif sub == "server":
         val = (arg[1].lower() if len(arg) > 1 else "")
         if val in ("on", "off"):
@@ -574,4 +780,4 @@ def cmd_multiagent(ctx, arg):
             save_config(ctx.cfg)
         show_status(ctx)
     else:
-        out("  " + dim("usage: /multiagent [on|off|status] · smart [id|n|auto] · worker [id|n|auto] · server on|off"))
+        out("  " + dim("usage: /multiagent [on|off|status] · smart [id|n|auto] · worker [id|n|auto] · server on|off · budget · test"))

@@ -187,7 +187,7 @@ def turn_report(ctx, before, comp_before):
             out("  " + dim("… +%d more" % (len(rows) - 14)))
     t = ctx.turn
     if t["reqs"]:
-        bits = ["%ds" % int(time.time() - t["t0"]), "%d tool" % t["tools"], "%d req" % t["reqs"]]
+        bits = ["%ds" % int(time.time() - t["t0"]), "%d tool" % t["tools"], "%d req" % t["reqs"] + (" (worker %d)" % t["ma_reqs"] if t.get("ma_reqs") else "")]
         if is_free_model(ctx.cur_model()):
             lim = ctx.cfg.get("free_daily")
             bits.append("today %d%s" % (req_today(ctx), ("/%d" % lim) if lim else ""))

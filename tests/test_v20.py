@@ -440,8 +440,8 @@ class TestTheConversationSurvivesARestart(unittest.TestCase):
 class TestVersionAndDocs(unittest.TestCase):
     def test_versions_and_docs(self):
         from lumo.config import VERSION
-        self.assertEqual(VERSION, "1.11.2")
-        self.assertEqual(lv.__version__, "1.3.0")
+        self.assertEqual(VERSION, "1.12.0")
+        self.assertEqual(lv.__version__, "1.3.1")
         self.assertIn("## [1.10.0]", (ROOT / "CHANGELOG.md").read_text())
         readme = (ROOT / "README.md").read_text()
         for needed in ("video_api", "define_move", "Scene3D", "/remember", "Actor"):

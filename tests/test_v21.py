@@ -170,7 +170,7 @@ class DelegateTool(unittest.TestCase):
 
 
 class ErrorDigest(unittest.TestCase):
-    LONG = "Traceback (most recent call last):\n" + "  File \"app.py\", line 3, in f\n" * 120 + "ValueError: bad value\n[exit code 1]"
+    LONG = "Traceback (most recent call last):\n" + "  File \"app.py\", line 3, in f\n" * 220 + "ValueError: bad value\n[exit code 1]"
 
     def test_a_long_failure_is_read_by_the_light_model(self):
         ctx = make_ctx(multiagent=True)
@@ -412,7 +412,7 @@ class VideoDirector(unittest.TestCase):
         text = (ROOT / "skills" / "video-skill.md").read_text()
         for needle in ("Stay on the request", "automatic camera", "focus(", "outside the picture"):
             self.assertIn(needle, text)
-        self.assertEqual(self.lv.__version__, "1.3.0")
+        self.assertEqual(self.lv.__version__, "1.3.1")
 
 
 # ---------------------------------------------------------------------------------------------------------------------------
@@ -438,6 +438,12 @@ def _sse(h, chunks):
 
 def _text(t):
     return [{"choices": [{"delta": {"content": t}, "finish_reason": None}]}, {"choices": [{"delta": {}, "finish_reason": "stop"}]}, "[DONE]"]
+
+
+def _calls(items):
+    """One response with several tool calls: items = [(name, args)]."""
+    deltas = [{"index": i, "id": "call_%d" % (i + 1), "type": "function", "function": {"name": n, "arguments": json.dumps(a)}} for i, (n, a) in enumerate(items)]
+    return [{"choices": [{"delta": {"tool_calls": deltas}, "finish_reason": None}]}, {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}, "[DONE]"]
 
 
 def _call(name, args, cid="call_1"):
@@ -477,6 +483,17 @@ class MAHandler(http.server.BaseHTTPRequestHandler):
         E2E["log"].append({"model": model, "server_tool": bool(sub), "server_model": sub[0]["parameters"].get("model") if sub else None, "names": names,
                            "last_role": last.get("role"), "last": last.get("content") if last.get("role") == "tool" else None})
         sc = E2E["scenario"]
+        if sc == "selftest":                                       # /multiagent test: the server-tool probe, the local worker and the digest
+            if body.get("stream") is False and sub:
+                return self._json(200, {"choices": [{"message": {"content": "12, 3, 4, 7"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 50, "completion_tokens": 8}})
+            if model == LIGHT and not tools:
+                return _sse(self, _text("FAIL app.py:3 ValueError: invalid literal for int()"))
+            if model == LIGHT and last.get("role") == "tool":
+                return _sse(self, _text("a.txt: alpha-4821 ; b.txt: bravo-7730"))
+            if model == LIGHT:
+                import re as _re
+                folder = (_re.search(r"folder (\S+)", str(msgs[-1].get("content"))) or [None, "."])[1]
+                return _sse(self, _calls([("read_file", {"path": folder + "/a.txt"}), ("read_file", {"path": folder + "/b.txt"})]))
         if sc == "refused" and sub:
             return self._json(400, {"error": {"code": 400, "message": "Invalid tool type openrouter:subagent for this model"}})
         if model == LIGHT:                                         # the worker

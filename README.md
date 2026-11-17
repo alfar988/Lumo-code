@@ -99,7 +99,7 @@ The key can also come from the `OPENROUTER_API_KEY` environment variable. `LUMO_
 |---|---|
 | `/models` | choose a free model |
 | `/banner [bold\|thin\|emblem\|shadow\|mini]` | show the banner again; the style is remembered (`/banner anim off` stops the line-by-line reveal) |
-| `/multiagent [on\|off]` | smart model plus a light worker (unpacks files, runs tests, condenses errors); `/multiagent worker [id\|auto]` picks the worker |
+| `/multiagent [on\|off]` | smart model plus a light worker (unpacks files, runs tests, condenses errors); `worker`, `smart`, `budget`, `test` are sub-commands |
 | `/plan [task]` | research and plan first, then build |
 | `/ui` | review and polish the web pages in the workspace |
 | `/skills`, `/skill why` | list skills, show why they were picked |
@@ -143,7 +143,8 @@ Two links connect them. On OpenRouter every request gets one extra entry in its 
 - `/multiagent worker` lists lighter models and `/multiagent worker <n|id>` picks one (`auto` goes back to the automatic choice). `/multiagent server on|off` switches the OpenRouter server tool. `/multiagent status` shows who does what and how many worker requests this session used.
 - If OpenRouter refuses the server tool for a model, Lumo drops it for the session, tells you once, and goes on with `delegate`.
 - A failing check with long output is read by the light model first: the smart model gets the errors in a few lines plus the tail of the raw output.
-- Every worker request counts toward your request limit (free models share one daily limit); the saver modes skip the error digest.
+- Every worker request counts toward your request limit (free models share one daily limit), so the worker is rationed: up to 3 jobs and 8 requests per task, errors are condensed only when they are really long (3500+ characters), identical `extract` jobs come from a cache, and with 10 or fewer free requests left today the worker pauses by itself until the limit resets. `/multiagent budget` shows and changes these numbers; the saver modes skip the error digest.
+- `/multiagent test` checks the whole thing against your real provider (about 4 requests): whether OpenRouter accepts the `openrouter:subagent` tool, whether the light model can work on files, whether it can condense an error. The result is printed and saved in `history/multiagent-test.txt`.
 
 ### Research
 

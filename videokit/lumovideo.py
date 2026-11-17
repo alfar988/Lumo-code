@@ -16,7 +16,7 @@ internet), Video (scenes, render, checks), Stick/Fight/Stage (stickman character
 (components), play_hints/open_video (how to watch the result).
 """
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 import array
 import bisect
@@ -4712,10 +4712,15 @@ class Show(_Helpful):
         hp = {id(a): (float(a.hp) if a.hp is not None else None) for a in self.actors}
         counts = {}
 
+        sound_cache = {}                                                        # a sound is synthesised once per (name, variant, settings), not once per shot
+
         def snd(name, **kw):
             k = counts.get(name, 0)
             counts[name] = k + 1
-            return getattr(sfx, name)(variant=k % 5, **kw)
+            key = (name, k % 5, tuple(sorted(kw.items())))
+            if key not in sound_cache:
+                sound_cache[key] = getattr(sfx, name)(variant=k % 5, **kw)
+            return sound_cache[key]
 
         def fall(tg, ti, how="shot"):
             if tg._dead is not None:
