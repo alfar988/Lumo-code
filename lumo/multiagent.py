@@ -216,7 +216,7 @@ def smart_problem(ctx):
     """'' when the smart model is fine for coding; otherwise why it is not."""
     smart = ctx.cfg.get("model") or ""
     if not smart or smart == ROUTER_MODEL:
-        return "the random router picks a different model every time, so code quality jumps around"
+        return "the random router changes the model on every request"
     chosen = (ctx.cfg.get("light_by_provider") or {}).get(provider_id(ctx))
     if chosen and chosen != smart:
         from lumo.models import model_score
@@ -235,7 +235,7 @@ def ensure_smart(ctx, say=True):
     best = coder_candidates(ctx, 1)
     if not best:
         if say:
-            out("  " + warn("! ") + dim("smart model: " + problem + ". Pick a strong one with /models."))
+            out("  " + warn("! ") + dim("smart model: " + problem + ". Choose one with /models."))
         return False
     pick = best[0][0]["id"]
     if pick == ctx.cfg.get("model"):
@@ -245,7 +245,7 @@ def ensure_smart(ctx, say=True):
     ctx.ma_auto = None
     save_config(ctx.cfg)
     if say:
-        out("  " + ok("✓ ") + dim("smart model set to ") + pick + dim(" (best for coding; " + problem + ")"))
+        out("  " + dim("smart model set to ") + pick + dim(" (%s)." % problem))
     return True
 
 
@@ -287,7 +287,7 @@ def server_rejected(ctx, body, code, low):
     if code not in (400, 404, 422) or not _REJECT.search(low):
         return False
     ctx.ma_server_off = True
-    ctx.ma_note = "OpenRouter did not accept the subagent server tool for this request (%s). Multi-agent goes on with the local worker (delegate)." % clip(low.replace("\n", " "), 90)
+    ctx.ma_note = "OpenRouter refused the subagent tool (%s). Using the local worker only." % clip(low.replace("\n", " "), 90)
     return True
 
 
@@ -295,7 +295,7 @@ def flush_notice(ctx):
     why = paused_reason(ctx) if enabled(ctx) else ""
     if why and not getattr(ctx, "ma_paused_told", False):
         ctx.ma_paused_told = True
-        out("  " + warn("! ") + dim("multi-agent worker paused: %s. The smart model works alone until the limit resets (00:00 UTC)." % why))
+        out("  " + warn("! ") + dim("Worker paused: %s. The smart model works alone until the limit resets (00:00 UTC)." % why))
     elif not why:
         ctx.ma_paused_told = False
     note = getattr(ctx, "ma_note", "")
@@ -398,7 +398,7 @@ def run_worker(ctx, role, task):
     t0, steps, final, errors = time.time(), 0, "", 0
     ctx.ma_stats["jobs"] += 1
     ctx.turn["ma_jobs"] = ctx.turn.get("ma_jobs", 0) + 1
-    out("  " + acc("◈ ") + bold("worker") + dim(" · %s · %s" % (role, short_model(model))))
+    out("  " + bold("worker") + dim(" (%s, %s)" % (role, short_model(model))))
     out("    " + dim(clip(task.replace("\n", " "), tw() - 8)))
     ctx.ma_depth += 1
     try:
@@ -515,7 +515,7 @@ def digest_failure(ctx, name, args, res):
         sp.stop()
     if not text:
         return res
-    out("  " + faint("◈ ") + dim("errors condensed by %s" % short_model(light_model(ctx))))
+    out("  " + dim("errors condensed by %s" % short_model(light_model(ctx))))
     return ("[light-model digest of this failure, read by %s; if it looks wrong trust the raw output below]\n%s\n\n[raw output, last part]\n%s"
             % (light_model(ctx), text[:1800], res[-3000:]))
 
@@ -557,8 +557,8 @@ def selftest(ctx):
     smart model, (B) can the light model work on files through the local worker, (C) can it condense an error. Uses about 4 requests."""
     from lumo.client import build_request
     smart, light, prov = smart_model(ctx), light_model(ctx), providers.active(ctx.cfg)
-    out("  " + acc("◈ ") + bold("multi-agent self-test") + dim("  smart %s · light %s · %s" % (clip(smart, 28), clip(light, 28), prov["name"])))
-    out("    " + dim("about 4 requests; on free models they count toward the daily limit"))
+    out("  multi-agent self-test" + dim("  smart %s, worker %s, %s" % (clip(smart, 28), clip(light, 28), prov["name"])))
+    out("  " + dim("About 4 requests; on free models they count toward the daily limit."))
     rows = []
     was_mode, was_off, was_turn, reqs0 = ctx.cfg.get("multiagent"), getattr(ctx, "ma_server_off", False), ctx.turn, ctx.session_reqs
     ctx.cfg["multiagent"] = True                                         # the machinery is tested even when the mode is off
@@ -653,43 +653,42 @@ def status_rows(ctx):
 
 def show_status(ctx):
     on = enabled(ctx)
-    out("  " + acc("◈ ") + bold("multi-agent  ") + (ok("on") if on else warn("off")))
+    out("  multi-agent " + (ok("on") if on else dim("off")))
     if not on:
-        out("    " + dim("one smart model plans and codes; a light model unpacks files and runs tests."))
-        out("    " + dim("switch on: /multiagent on"))
+        out("  " + dim("A smart model writes the code; a small model reads files and runs tests. Turn it on with /multiagent on."))
         return
-    out("    " + dim("smart  ") + clip(smart_model(ctx), tw() - 14) + dim("   plans · codes · answers · fixes errors"))
+    out("  " + dim("smart   ") + clip(smart_model(ctx), tw() - 12))
+    out("  " + dim("worker  ") + clip(light_model(ctx), tw() - 12))
     problem = smart_problem(ctx)
     if problem:
-        out("    " + warn("! ") + dim(clip(problem, tw() - 10)))
-        out("    " + dim("fix: /multiagent smart auto"))
-    out("    " + dim("light  ") + clip(light_model(ctx), tw() - 14) + dim("   unpacks files · runs tests · condenses errors"))
+        out("  " + warn("! ") + dim(clip(problem, tw() - 6)))
+        out("  " + dim("/multiagent smart auto picks a coding model."))
     if not worker_is_distinct(ctx):
-        out("    " + warn("! ") + dim("both roles use the same model. Pick a lighter one: /multiagent worker"))
+        out("  " + warn("! ") + dim("smart and worker are the same model. /multiagent worker lets you pick another."))
     if provider_id(ctx) == "openrouter":
         if ctx.cfg.get("multiagent_server", True) is False:
-            out("    " + dim("link   delegate only (server tool off: /multiagent server on)"))
+            link = "local worker only (server tool off)"
         elif getattr(ctx, "ma_server_off", False):
-            out("    " + dim("link   delegate only (OpenRouter refused the server tool this session)"))
+            link = "local worker only (OpenRouter refused the server tool)"
         elif light_model(ctx) == ROUTER_MODEL:
-            out("    " + dim("link   delegate only (the random router cannot be the worker: /multiagent worker)"))
+            link = "local worker only (the random router cannot be the worker)"
         else:
-            out("    " + dim("link   ") + SERVER_TOOL_TYPE + dim(" (server tool) + delegate (local worker)"))
+            link = SERVER_TOOL_TYPE + " + local worker"
     else:
-        out("    " + dim("link   delegate (local worker); the server tool is OpenRouter only"))
-    st = ctx.ma_stats
-    if st["jobs"] or st["reqs"]:
-        out("    " + dim("session %d worker job%s · %d request%s · %d tokens" % (st["jobs"], "" if st["jobs"] == 1 else "s", st["reqs"], "" if st["reqs"] == 1 else "s", st["tokens"])))
+        link = "local worker (the server tool is OpenRouter only)"
+    out("  " + dim("link    ") + link)
     b = budget(ctx)
-    out("    " + dim("per task: up to %d worker jobs · %d worker requests · errors condensed from %d characters" % (b["jobs"], b["reqs"], b["digest_min"])))
+    out("  " + dim("limits  ") + "%d jobs and %d worker requests per task; errors condensed from %d characters" % (b["jobs"], b["reqs"], b["digest_min"]))
     jobs, reqs = ctx.turn.get("ma_jobs", 0), ctx.turn.get("ma_reqs", 0)
     if jobs or reqs:
-        out("    " + dim("this task: %d job%s · %d worker request%s" % (jobs, "" if jobs == 1 else "s", reqs, "" if reqs == 1 else "s")))
+        out("  " + dim("task    ") + "%d job%s, %d worker request%s so far" % (jobs, "" if jobs == 1 else "s", reqs, "" if reqs == 1 else "s"))
+    st = ctx.ma_stats
+    if st["jobs"] or st["reqs"]:
+        out("  " + dim("session ") + "%d job%s, %d request%s, %d tokens" % (st["jobs"], "" if st["jobs"] == 1 else "s", st["reqs"], "" if st["reqs"] == 1 else "s", st["tokens"]))
     left = quota_left(ctx)
     if left is not None:
-        why = paused_reason(ctx)
-        out("    " + dim("free requests left today: %d" % left) + ((" " + warn("· worker paused")) if why else ""))
-    out("    " + dim("/multiagent off · smart · worker · server on|off · budget · test"))
+        out("  " + dim("free requests left today: %d" % left) + ((" " + warn("(worker paused)")) if paused_reason(ctx) else ""))
+    out("  " + dim("/multiagent off · smart · worker · server · budget · test"))
 
 
 def cmd_multiagent(ctx, arg):
@@ -708,7 +707,7 @@ def cmd_multiagent(ctx, arg):
                 pass
         show_status(ctx)
         if now:
-            out("    " + dim("every worker request counts toward your request limit; free models share one daily limit."))
+            out("  " + dim("Worker requests count toward your daily request limit."))
     elif sub == "worker":
         want = arg[1] if len(arg) > 1 else ""
         if not want:
@@ -764,12 +763,12 @@ def cmd_multiagent(ctx, arg):
             ctx.cfg[keys[arg[1].lower()]] = int(arg[2])
             save_config(ctx.cfg)
         b = budget(ctx)
-        out("  " + acc("◈ ") + bold("worker budget") + dim("  (protects your daily request quota)"))
-        out("    " + dim("jobs per task      ") + str(b["jobs"]) + dim("   /multiagent budget jobs <n>"))
-        out("    " + dim("requests per task  ") + str(b["reqs"]) + dim("   /multiagent budget reqs <n>"))
-        out("    " + dim("condense errors    ") + dim("from ") + str(b["digest_min"]) + dim(" characters   /multiagent budget digest <n>"))
-        out("    " + dim("pause when         ") + dim("%d free requests are left   /multiagent budget low <n>" % int(ctx.cfg.get("ma_low_quota", LOW_QUOTA))))
-        out("    " + dim("back to defaults: /multiagent budget reset"))
+        out("  worker limits")
+        out("  " + dim("jobs per task      ") + str(b["jobs"]) + dim("   /multiagent budget jobs <n>"))
+        out("  " + dim("requests per task  ") + str(b["reqs"]) + dim("   /multiagent budget reqs <n>"))
+        out("  " + dim("condense errors    ") + "from %d characters" % b["digest_min"] + dim("   /multiagent budget digest <n>"))
+        out("  " + dim("pause at           ") + "%d free requests left" % int(ctx.cfg.get("ma_low_quota", LOW_QUOTA)) + dim("   /multiagent budget low <n>"))
+        out("  " + dim("defaults:          /multiagent budget reset"))
     elif sub == "test":
         selftest(ctx)
     elif sub == "server":

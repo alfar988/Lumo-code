@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.1] - 2026-11-17
+
+### Changed
+- **A quiet startup.** The boxed table under the banner (workspace, provider, model, fallback, access, memory) is gone: the prompt line already shows workspace, model, access and requests, and `/status` has the rest in plain rows. After the logo only things that need saying are printed: a warning when the random router is the model, a line when multi-agent is on, a line when a request saver is active. The prompt line says `multi` instead of a symbol when multi-agent is on.
+- **Plainer wording everywhere I had added text.** The resume question is `Resume it? [y/N]`; the other startup notes are one short sentence each. The multi-agent messages state facts (smart, worker, link, limits) without descriptive taglines or decorative symbols.
+- **The model is told how to write.** The system prompt now asks for plain words and short sentences, no exclamation marks, no emojis, no stock openers or closers ("Great question", "Certainly", "Tentu!", "Dengan senang hati", "Berikut adalah", "Semoga membantu"), no recap of the request, no announcing what it is about to do, and natural everyday Indonesian instead of stiff or slangy wording. A greeting gets one short, plain sentence.
+
 ## [1.12.0] - 2026-11-17
 
 ### Added

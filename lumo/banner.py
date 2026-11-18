@@ -442,38 +442,6 @@ def header_lines(width, style="bold"):
     return slab_hero(width)
 
 
-def card_lines(rows, width, title=""):
-    """An info card with a rounded frame whose color flows from cyan to rose. rows = [(label, value)]; value may already carry color."""
-    W = max(28, min(width, 60))
-    utf = _utf8()
-    tl, tr, bl, br, hz, vt = ("╭", "╮", "╰", "╯", "─", "│") if utf else ("+", "+", "+", "+", "-", "|")
-    inner = W - 6
-    label_w = min(12, max((len(l) for l, _v in rows), default=6))
-    n = len(rows) + 1
-
-    def edge(ch, t):
-        return _fg(_shade(_gradient(t), 0.62), ch)
-
-    def span(chars, t0, t1):
-        return "".join(edge(ch, t0 + (t1 - t0) * i / float(max(1, len(chars) - 1))) for i, ch in enumerate(chars))
-    head = (" " + title + " ") if title else ""
-    top_fill = hz * max(0, W - 4 - len(head) - (1 if head else 0))
-    if head:
-        top = "  " + edge(tl, 0.0) + edge(hz, 0.02) + dim(head) + span(top_fill + tr, 0.2, 1.0)
-    else:
-        top = "  " + span(tl + hz * (W - 4) + tr, 0.0, 1.0)
-    lines = [top]
-    for i, (label, value) in enumerate(rows):
-        room = inner - label_w - 2
-        val = value if vlen(value) <= room else clip(ANSI_RE.sub("", value), room)
-        body = dim(label.ljust(label_w)) + "  " + val
-        pad = " " * max(0, inner - vlen(body))
-        t = (i + 1) / float(n)
-        lines.append("  " + edge(vt, t * 0.9) + " " + body + pad + " " + edge(vt, t * 0.9))
-    lines.append("  " + span(bl + hz * (W - 4) + br, 0.0, 1.0))
-    return lines
-
-
 def print_header(out, width, style="bold", animate=False):
     lines = header_lines(width, style)
     for line in lines:

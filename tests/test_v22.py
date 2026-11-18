@@ -149,7 +149,7 @@ class RequestBudget(unittest.TestCase):
         with mock.patch("lumo.multiagent.out") as o:
             multiagent.show_status(ctx)
         text = " ".join(str(c.args[0]) for c in o.call_args_list)
-        self.assertIn("per task: up to 3 worker jobs", text)
+        self.assertIn("3 jobs and 8 worker requests per task", text)
         self.assertIn("free requests left today: 30", text)
 
 
@@ -278,6 +278,64 @@ class BigBattles(unittest.TestCase):
         b.summary()
         self.assertEqual(len(a._snd), len(b._snd))
         self.assertEqual([round(x[0], 3) for x in a._snd], [round(x[0], 3) for x in b._snd])
+
+
+class QuietStartup(unittest.TestCase):
+    """No info table under the banner; the details live in /status; plain wording."""
+
+    def run_cli(self, stdin, **cfg_env):
+        import shutil
+        wd = Path(tempfile.mkdtemp(prefix="quiet_"))
+        (wd / "ws").mkdir()
+        env = dict(os.environ, LUMO_HOME=str(wd / "home"), OPENROUTER_API_KEY="sk-or-test-1234567890", NO_COLOR="1", PYTHONIOENCODING="utf-8", LUMO_NO_ANIM="1",
+                   LUMO_API_BASE="http://127.0.0.1:9/api/v1")
+        env.update(cfg_env)
+        p = subprocess.run([sys.executable, str(ROOT / "run.py"), str(wd / "ws"), "-m", T21.SMART], input=stdin, env=env, capture_output=True, text=True, timeout=120, cwd=str(ROOT))
+        self.addCleanup(shutil.rmtree, str(wd), True)
+        return p.stdout + p.stderr
+
+    def test_the_startup_has_the_logo_and_no_table(self):
+        out = self.run_cli("/exit\n")
+        self.assertIn("C O D E", out)
+        self.assertIn("/help for commands", out)
+        for gone in ("provider ", "fallback", "history/ (automatic)", "outside: ask", "Ask anything", "╭─ session", "switches model on errors"):
+            self.assertNotIn(gone, out, gone)
+
+    def test_status_still_has_the_details(self):
+        out = self.run_cli("/status\n/exit\n")
+        for needle in ("provider", "workspace", "permissions", "history"):
+            self.assertIn(needle, out)
+
+    def test_the_prompt_line_says_multi_in_words(self):
+        from lumo.cli import status_line
+        from lumo.ui import ANSI_RE
+        on = ANSI_RE.sub("", status_line(make_ctx(multiagent=True)))
+        off = ANSI_RE.sub("", status_line(make_ctx()))
+        self.assertIn("multi", on)
+        self.assertNotIn("multi", off)
+        self.assertNotIn("◈", on)
+
+    def test_the_router_warning_is_one_plain_sentence(self):
+        import shutil
+        wd = Path(tempfile.mkdtemp(prefix="quiet2_"))
+        (wd / "ws").mkdir()
+        env = dict(os.environ, LUMO_HOME=str(wd / "home"), OPENROUTER_API_KEY="sk-or-test-1234567890", NO_COLOR="1", LUMO_NO_ANIM="1", LUMO_API_BASE="http://127.0.0.1:9/api/v1")
+        p = subprocess.run([sys.executable, str(ROOT / "run.py"), str(wd / "ws"), "-m", "openrouter/free"], input="/exit\n", env=env, capture_output=True, text=True, timeout=120, cwd=str(ROOT))
+        self.addCleanup(shutil.rmtree, str(wd), True)
+        self.assertIn("openrouter/free picks a different model on every request. Choose one with /models.", p.stdout + p.stderr)
+
+    def test_the_prompt_tells_the_model_how_to_write(self):
+        from lumo.prompts import build_system
+        text = build_system(make_ctx(), "build")
+        self.assertIn("Write like a person who knows the subject", text)
+        for phrase in ("Great question", "Dengan senang hati", "Semoga membantu"):
+            self.assertIn(phrase, text)                                 # named as things NOT to say
+        self.assertIn("no exclamation marks, no emojis", text)
+
+    def test_no_user_facing_text_of_multi_agent_uses_decorative_symbols(self):
+        src = (ROOT / "lumo" / "multiagent.py").read_text()
+        for sym in ("◈", "✦ ", "↺", "↻"):
+            self.assertNotIn(sym, src.replace('"✦"', ""), sym)          # the beam's spark in banner.py is a drawing; here only words
 
 
 if __name__ == "__main__":

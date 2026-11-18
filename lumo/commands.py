@@ -131,8 +131,8 @@ HELP = """
   /models · /model [id|n]     list models, best first, and choose one
   /checklimit [probe]         how much of the AI allowance is left
   /rotate [auto|on|off|add id]  automatic fallback models
-  /multiagent [on|off]          smart model + light worker (unpacks files, runs tests) · worker [id|auto]
-  /banner [bold|thin|emblem|shadow|mini]  show the banner again · /banner anim on|off
+  /multiagent [on|off]          a smart model writes the code, a small one reads files and runs tests
+  /banner [bold|thin|emblem|shadow|mini]  show the banner again
   /mode auto|chat|code        how the AI works
   /research on|off · /status · /abilities
   /search [kind] <query>        search the web now (kinds: news code qa docs packages academic wiki)
@@ -259,8 +259,15 @@ def cmd_status(ctx):
     out("  " + dim("planning     ") + ("on" if ctx.cfg.get("plan", True) else "off") + dim(" · research ") +
         ("on" if ctx.cfg.get("research", True) else "off") + dim(" · mode ") + ctx.cfg.get("mode", "auto"))
     out("  " + dim("history      ") + "%d messages · ~%dk characters" % (len(ctx.messages), hist_chars(ctx.messages) // 1000))
+    if multiagent_on(ctx):
+        from lumo import multiagent
+        out("  " + dim("multi-agent  ") + "on · smart %s · worker %s" % (multiagent.smart_model(ctx), multiagent.light_model(ctx)))
     if safelimit.active():
         out("  " + dim("limit saver   ") + ok(safelimit.label()))
+
+
+def multiagent_on(ctx):
+    return bool(ctx.cfg.get("multiagent", False))
 
 
 def cmd_compact(ctx, arg):

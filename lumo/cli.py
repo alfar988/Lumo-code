@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from lumo.agent import run_turn
-from lumo.banner import card_lines, print_header, STYLE_ALIASES, STYLES
+from lumo.banner import print_header, STYLE_ALIASES, STYLES
 from lumo.client import NETSTATE
 from lumo.commands import cmd_resume, handle_command, SLASH
 from lumo.config import APP_DIR, DEFAULT_MODEL, HISTORY_FILE, HOME_DIR, ROUTER_MODEL, SKILLS_DIR, VERSION
@@ -77,13 +77,13 @@ def status_line(ctx):
     budget = tw() - 5
     chip, chip_plain = mode_chip(ctx)
     rot = " ⇄" if ctx.override and ctx.override[0] == ctx.cfg.get("model", DEFAULT_MODEL) else ""
-    rot += " ◈" if multiagent.enabled(ctx) else ""            # ◈ = multi-agent mode is on
     model_s = clip(short_model(ctx.cur_model()) + rot, 24)
+    multi = multiagent.enabled(ctx) and budget >= 52
     req = ("req %d" % req_today(ctx)) if is_free_model(ctx.cur_model()) else ""
     with_req = bool(req)
 
     def total(ws_s):
-        items = [ws_s, model_s, chip_plain] + ([req] if with_req else [])
+        items = [ws_s, model_s, chip_plain] + ([req] if with_req else []) + (["multi"] if multi else [])
         return sum(vlen(i) for i in items) + 3 * (len(items) - 1)
 
     ws_len = 30
@@ -99,7 +99,7 @@ def status_line(ctx):
             model_s = clip(model_s, vlen(model_s) - 2)
         else:
             break
-    parts = [dim(ws_s), dim(model_s), chip] + ([dim(req)] if with_req else [])
+    parts = [dim(ws_s), dim(model_s), chip] + ([dim(req)] if with_req else []) + ([dim("multi")] if multi else [])
     return faint("  ╭ ") + faint(" · ").join(parts)
 
 
@@ -143,32 +143,16 @@ def banner_style(ctx):
 
 def banner(ctx):
     w = tw()
-    chip, _ = mode_chip(ctx)
     anim = bool(sys.stdout.isatty() and USE_COLOR and ctx.cfg.get("banner_anim", True) and not os.environ.get("LUMO_NO_ANIM"))
     out()
     print_header(out, w, banner_style(ctx), animate=anim)
     out()
-    room = max(12, min(w, 60) - 22)
-    rows = [("workspace", fit_path(ctx.ws, room)),
-            ("provider", providers.active(ctx.cfg)["name"]),
-            ("model", clip(ctx.cur_model(), room))]
-    if multiagent.enabled(ctx):
-        rows.append(("multi-agent", ok("on") + dim(" · light ") + clip(multiagent.light_model(ctx), max(8, room - 12))))
-    rows.append(("fallback", (ok("on") + dim(" · switches model on errors")) if rotation_enabled(ctx) else warn("off")))
-    rows.append(("access", chip + dim(" · outside: ask")))
-    rows.append(("memory", "history/" + dim(" (automatic)")))
-    if safelimit.active():
-        rows.append(("saver", ok(safelimit.label()) + dim(" · fewer requests")))
-    for line in card_lines(rows, w, "session"):
-        out(line)
-        if anim:
-            time.sleep(0.03)
-    out()
-    out("  " + dim("Ask anything, or say what to build or fix." if w >= 48 else "Ask anything, or say what to do."))
-    out("  " + faint("/help") + dim("  ") + faint("/multiagent") + dim("  ") + faint("/models") + dim("  ") + faint("/banner"))
     if ctx.cfg.get("model") == ROUTER_MODEL:
-        out("  " + warn("!") + dim(" the random router gives inconsistent quality"))
-        out("    " + dim("use /models to pick a fixed model"))
+        out("  " + warn("!") + dim(" %s picks a different model on every request. Choose one with /models." % ROUTER_MODEL))
+    if multiagent.enabled(ctx):
+        out("  " + dim("multi-agent on, worker: %s" % clip(multiagent.light_model(ctx), max(10, w - 30))))
+    if safelimit.active():
+        out("  " + dim("request saver: %s" % safelimit.label()))
 
 
 def cmd_banner(ctx, arg):
@@ -304,10 +288,10 @@ def main():
         if pend or str(st.get("reason", "")).startswith(("error", "empty", "limit", "rotation")):
             if age is None or age <= float(ctx.cfg.get("resume_ask_hours", 24)):
                 out()
-                out("  " + warn("↺ ") + "unfinished work found in history" +
-                    dim(" (%d messages%s)" % (len(st["messages"]), (", plan: " + st["plan"]["title"]) if st.get("plan") else "")))
+                out("  " + "Unfinished work from the last session" +
+                    dim(" (%d messages%s)." % (len(st["messages"]), (", plan: " + st["plan"]["title"]) if st.get("plan") else "")))
                 try:
-                    ans = input(rl("  " + acc("▍") + " " + dim("resume it? Enter = no, a new start · y = yes › "))).strip().lower()
+                    ans = input(rl("  " + dim("Resume it? [y/N] › "))).strip().lower()
                 except EOFError:
                     ans = "n"
                 if ans in ("y", "ya", "yes"):                                   # only an explicit yes goes back to old work
@@ -315,16 +299,15 @@ def main():
                     if r:
                         first_prompt = r[7:]
             else:
-                out("  " + dim("↺ older unfinished work is saved in history/ · /resume goes back to it"))
+                out("  " + dim("Older unfinished work is in history/. /resume loads it."))
         elif ctx.cfg.get("auto_resume", True) and (age is None or age <= float(ctx.cfg.get("auto_resume_hours", 3))):
             if auto_restore(ctx):                                               # finished work, same session: keep the conversation so Lumo remembers after a restart
                 from lumo.compact import compact_archive, est_tokens
                 if len(ctx.messages) > 60 or est_tokens(ctx.messages) > 30000:
                     compact_archive(ctx, quiet=True)                   # a long chat is archived (nothing is lost: history/archive/), the newest messages stay
-                out("  " + ok("↺ continued your last conversation") + dim(" (%d messages, saved %s) · new topic: /clear · stop remembering: /remember off" % (
-                    len(ctx.messages), st.get("saved", "earlier"))))
+                out("  " + dim("Continuing the last conversation (%d messages). /clear starts over." % len(ctx.messages)))
         else:
-            out("  " + dim("↺ a new start. The earlier conversation is saved in history/ · /resume goes back to it"))
+            out("  " + dim("New session. The last conversation is in history/; /resume loads it."))
 
     if args.cont and load_session(ctx, "last"):
         out("  " + ok("✓ resumed the last session (%d messages)" % len(ctx.messages)))

@@ -292,13 +292,6 @@ class NewBanner(unittest.TestCase):
             for line in banner.header_lines(w):
                 self.assertLessEqual(vlen(ANSI_RE.sub("", line)), w, (w, line))
 
-    def test_the_card_lines_are_aligned_and_fit(self):
-        rows = [("workspace", "~/workspace"), ("model", "nvidia/nemotron-3-ultra-550b-a55b:free-very-long-name-that-must-be-clipped"), ("multi-agent", "on")]
-        for w in (30, 44, 60, 90):
-            lines = [ANSI_RE.sub("", l) for l in banner.card_lines(rows, w, "session")]
-            widths = {len(l) for l in lines}
-            self.assertEqual(len(widths), 1, (w, widths))
-            self.assertLessEqual(widths.pop(), max(w, 30))
 
 
 class VideoDirector(unittest.TestCase):
@@ -752,8 +745,8 @@ class StayOnTopic(unittest.TestCase):
         self.addCleanup(shutil.rmtree, str(home), True)
         self.addCleanup(shutil.rmtree, str(ws), True)
         text = buf.decode("utf-8", "replace")
-        self.assertIn("unfinished work found", text)
-        self.assertIn("Enter = no", text)
+        self.assertIn("Unfinished work from the last session", text)
+        self.assertIn("Resume it? [y/N]", text)
         self.assertNotIn("history loaded", text)
 
 
