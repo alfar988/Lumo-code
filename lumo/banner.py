@@ -62,8 +62,16 @@ def _bg(rgb):
     return "\033[48;2;%d;%d;%dm" % rgb if TRUECOLOR else "\033[48;5;%dm" % _to256(rgb)
 
 
+def _fg(rgb, text):
+    return ("\033[38;2;%d;%d;%dm" % rgb if TRUECOLOR else "\033[38;5;%dm" % _to256(rgb)) + text + "\033[0m"
+
+
 def _lift(rgb, k):
     return tuple(int(v + (255 - v) * k) for v in rgb)
+
+
+def _shade(rgb, k):
+    return tuple(int(v * k) for v in rgb)
 
 
 SLAB = {  # 6 x 7 pixels per letter (the M is 7 wide)
@@ -73,34 +81,52 @@ SLAB = {  # 6 x 7 pixels per letter (the M is 7 wide)
     "O": [".####.", "##..##", "##..##", "##..##", "##..##", "##..##", ".####."],
 }
 WORD = "LUMO"
+NBSP = "\u00a0"
+LOGO_W = 29          # pixels: the word is 28 wide, the shadow adds one
 
 
 def logo_rows(cell=2):
-    """The wordmark as 7 text rows. Each pixel is `cell` spaces with a background colour, cyan to violet across the word and a little lighter at the top."""
+    """The wordmark as 8 text rows. Each pixel is `cell` cells with a background colour: cyan to violet across the word, lighter at the top, with a darker
+    shadow one pixel down and to the right.
+
+    The coloured cells hold a no-break space, not a plain space: Termux (and some other terminals) treat a row of ordinary spaces as an empty row when the screen is
+    resized, e.g. when you zoom, and throw its colours away. A row with a no-break space is not empty, so the logo survives a zoom."""
     cols = []
     for i, ch in enumerate(WORD):
         cols.append(SLAB[ch])
         if i < len(WORD) - 1:
             cols.append(["."] * 7)                                   # one empty pixel column between the letters
     grid = ["".join(c[r] for c in cols) for r in range(7)]
-    w = len(grid[0])
+    w, h = len(grid[0]), len(grid)
     plain = not USE_COLOR or not _utf8()
     rows = []
-    for r, line in enumerate(grid):
+    for y in range(h + 1):
         cells = []
-        for x, ch in enumerate(line):
-            if ch != "#":
+        for x in range(w + 1):
+            on = y < h and x < w and grid[y][x] == "#"
+            shadow = (not on) and y > 0 and x > 0 and grid[y - 1][x - 1] == "#"
+            if not (on or shadow):
                 cells.append(" " * cell)
             elif plain:
-                cells.append(("█" if _utf8() else "#") * cell)
+                cells.append((("█" if on else "░") if _utf8() else ("#" if on else ".")) * cell)
+            elif on:
+                rgb = _shade(_lift(_gradient(x / float(max(1, w - 1))), 0.30 * (1.0 - y / 6.0)), 1.0 - 0.12 * (y / 6.0))
+                cells.append(_bg(rgb) + NBSP * cell + "\033[0m")
             else:
-                cells.append(_bg(_lift(_gradient(x / float(max(1, w - 1))), 0.22 * (1.0 - r / 6.0))) + " " * cell + "\033[0m")
+                cells.append(_bg(_shade(_gradient((x - 1) / float(max(1, w - 1))), 0.30)) + NBSP * cell + "\033[0m")
         rows.append("".join(cells))
     return rows
 
 
+def _bar(n):
+    """A thin line, cyan to violet."""
+    if not USE_COLOR or not _utf8():
+        return ("─" if _utf8() else "-") * n
+    return "".join(_fg(_gradient(i / float(max(1, n - 1))), "─") for i in range(n))
+
+
 def header_lines(width, style="bold"):
-    """Logo and one line with name and version. Each line starts with two spaces and fits `width` columns."""
+    """The logo, a thin line and one line with name and version. Each line starts with two spaces and fits `width` columns."""
     style = STYLE_ALIASES.get(style, style)
     name = "  " + bold("Lumo Code") + dim("  v" + VERSION + "  ·  /help")
     if vlen(name) > width:
@@ -109,10 +135,10 @@ def header_lines(width, style="bold"):
         name = "  " + bold("Lumo Code")
     if style == "mini":
         return [name]
-    cell = 2 if width >= 58 else 1 if width >= 31 else 0
+    cell = 2 if width >= 2 + LOGO_W * 2 else 1 if width >= 2 + LOGO_W else 0
     if not cell:
         return [name]
-    return ["  " + r for r in logo_rows(cell)] + ["", name]
+    return ["  " + r for r in logo_rows(cell)] + ["  " + _bar(LOGO_W * cell), name]
 
 
 def print_header(out, width, style="bold"):

@@ -349,36 +349,45 @@ class LogoBanner(unittest.TestCase):
         with mock.patch.object(banner, "USE_COLOR", True), mock.patch.object(banner, "_utf8", lambda: True):
             for cell in (1, 2):
                 rows = banner.logo_rows(cell)
-                self.assertEqual(len(rows), 7)
+                self.assertEqual(len(rows), 8)                                  # 7 rows of letters and the shadow's last row
                 for r in rows:
                     plain = ANSI_RE.sub("", r)
-                    self.assertEqual(set(plain), {" "})                      # spaces only: the colour is the background
-                    self.assertEqual(vlen(plain), 28 * cell)
-                    self.assertIn("48;", r) if r.strip() and ANSI_RE.sub("", r).strip() == "" and "\033[48" in r else None
+                    self.assertLessEqual(set(plain), {" ", "\u00a0"})            # no glyphs: the colour is the background
+                    self.assertEqual(vlen(plain), banner.LOGO_W * cell)
                 self.assertTrue(any("\033[48;" in r for r in rows))
-                self.assertFalse(any(ch in "".join(rows) for ch in "▀▄█▌▐"))
+                self.assertFalse(any(ch in "".join(rows) for ch in "▀▄█▌▐░▒▓"))
 
-    def test_without_colour_it_falls_back_to_full_blocks(self):
+    def test_no_logo_row_is_made_of_ordinary_spaces_only(self):
+        """Termux drops the colours of a row that holds nothing but ordinary spaces when the screen is resized (zoom): the banner vanished and never came back."""
+        with mock.patch.object(banner, "USE_COLOR", True), mock.patch.object(banner, "_utf8", lambda: True):
+            for cell in (1, 2):
+                for r in banner.logo_rows(cell):
+                    plain = ANSI_RE.sub("", r)
+                    self.assertTrue(plain.replace(" ", ""), "a row of only spaces: %r" % plain)         # something that is not a plain space
+                    self.assertIn("\u00a0", plain)
+
+    def test_without_colour_it_falls_back_to_blocks(self):
         with mock.patch.object(banner, "USE_COLOR", False), mock.patch.object(banner, "_utf8", lambda: True):
             rows = banner.logo_rows(2)
-        self.assertTrue(all(set(r) <= {" ", "█"} for r in rows))
+        self.assertTrue(all(set(r) <= {" ", "█", "░"} for r in rows))
         self.assertTrue(any("█" in r for r in rows))
+        self.assertTrue(any("░" in r for r in rows))                          # the shadow
 
     def test_layouts_fit_every_width(self):
         for w in range(20, 121, 5):
             for style in banner.STYLES:
                 for line in banner.header_lines(w, style):
                     self.assertLessEqual(vlen(ANSI_RE.sub("", line)), w, (w, style, line))
-        self.assertEqual(len(banner.header_lines(72)), 9)            # 7 rows, a blank line, the name
-        self.assertEqual(len(banner.header_lines(40)), 9)
+        self.assertEqual(len(banner.header_lines(72)), 10)           # 8 rows, the thin line, the name
+        self.assertEqual(len(banner.header_lines(40)), 10)
         self.assertEqual(len(banner.header_lines(24)), 1)            # too narrow for the logo: just the name
         self.assertEqual(len(banner.header_lines(72, "mini")), 1)
-        self.assertEqual(vlen(banner.header_lines(72)[0]), 2 + 56)
-        self.assertEqual(vlen(banner.header_lines(40)[0]), 2 + 28)
+        self.assertEqual(vlen(banner.header_lines(72)[0]), 2 + 58)
+        self.assertEqual(vlen(banner.header_lines(40)[0]), 2 + 29)
 
     def test_nothing_decorative_is_left(self):
         text = "\n".join(ANSI_RE.sub("", l) for l in banner.header_lines(72))
-        for gone in ("AI agent for the terminal", "C O D E", "✦", "◈", "━"):
+        for gone in ("AI agent for the terminal", "C O D E", "✦", "◈", "━", "╌"):
             self.assertNotIn(gone, text, gone)
         self.assertIn("Lumo Code", text)
 

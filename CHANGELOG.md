@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.12.3] - 2026-11-20
+
+### Fixed
+- **The logo vanished when Termux was zoomed and never came back.** The logo rows held only ordinary spaces with a background colour. When the screen is resized (a zoom changes the number of columns) Termux treats such a row as empty and throws its colours away. The coloured cells now hold a no-break space, which keeps the row alive through a zoom; `/banner` prints it again at any time.
+
+### Changed
+- **The logo has more body.** Letters shaded from light at the top to deeper at the bottom, a darker shadow one pixel down and to the right, and a thin gradient line under the word. Still no tagline, no table and no decoration around it.
+
 ## [1.12.2] - 2026-11-17
 
 ### Fixed
