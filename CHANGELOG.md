@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.12.2] - 2026-11-17
+
+### Fixed
+- **"lanjutkan kerja mu!" no longer digs through the transcript.** In a fresh session the last conversation (messages, plan, todo list, handoff) is now loaded first when the message is a continuation ("lanjut", "lanjutkan", "continue" ...); before, the model had no context and read `history/transcript.md` six times in a row. With nothing saved it says `Nothing to continue in this folder.` without sending a request. Reading `history/transcript.md` or `history/archive/` is capped at 150 lines at a time and two reads per task (search them instead).
+- **"ya", "ok", "oke", "sip", "siap" are answers again.** Since 1.11.2 they counted as greetings and got a no-tools reply, so confirming a question of the AI did nothing. Only real pings ("woii", "halo", "p", "?", laughs) are answered without tools.
+- **The logo no longer comes out striped.** Block glyphs leave thin seams on some phone fonts. The LUMO letters are now drawn with background-coloured spaces, which the terminal fills itself (no seams), in plain blocks without colour. The tagline, the `C O D E` letters, the beam and the animation are gone: the logo and one line with the name, version and `/help`. `/banner bold|mini`.
+
+### Changed
+- No mode announcements: `◇ Q&A mode` and `◇ build mode` are not printed any more; the skills line has no symbol.
+- The outside-workspace question is three short lines (`Outside the workspace`, the action, the folder) instead of a red WARNING box with a paragraph. System areas still say so and need a typed `yes`.
+
 ## [1.12.1] - 2026-11-17
 
 ### Changed

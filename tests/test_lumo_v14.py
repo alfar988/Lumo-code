@@ -66,23 +66,16 @@ class Rename(unittest.TestCase):
 
 
 class Banner(unittest.TestCase):
-    def test_wordmark_fits_every_width_and_has_both_sizes(self):
-        big = banner.wordmark(60)
-        small = banner.wordmark(34)
-        self.assertEqual((len(big), len(small)), (6, 3))
-        for w in (30, 34, 44, 60, 100):
+    def test_header_fits_every_width(self):
+        for w in (20, 30, 34, 44, 60, 100):
             for line in banner.header_lines(w):
                 self.assertLessEqual(vlen(ANSI_RE.sub("", line)), w, (w, line))
 
     def test_header_names_the_product_and_version(self):
-        text = "\n".join(ANSI_RE.sub("", l) for l in banner.header_lines(70))
-        self.assertIn("C O D E", text)                 # the default style: bold LUMO letters, then "C O D E" and the tagline
-        thin = "\n".join(ANSI_RE.sub("", l) for l in banner.header_lines(70, "emblem"))
-        self.assertIn("L U M O", thin)                 # the emblem style spells it out
-        self.assertIn("AI agent for the terminal", text)
-        self.assertRegex(text, r"v\d+\.\d+\.\d+")
-        plain = "\n".join(ANSI_RE.sub("", l) for l in banner.header_lines(70, "mini"))
-        self.assertIn("Lumo Code", plain)              # ... and plain in the one-line style
+        for style in ("bold", "mini"):
+            text = "\n".join(ANSI_RE.sub("", l) for l in banner.header_lines(70, style))
+            self.assertIn("Lumo Code", text)
+            self.assertRegex(text, r"v\d+\.\d+\.\d+")
 
     def test_logo_asset_exists_and_is_valid_xml(self):
         import xml.etree.ElementTree as ET

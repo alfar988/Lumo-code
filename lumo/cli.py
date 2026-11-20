@@ -143,9 +143,8 @@ def banner_style(ctx):
 
 def banner(ctx):
     w = tw()
-    anim = bool(sys.stdout.isatty() and USE_COLOR and ctx.cfg.get("banner_anim", True) and not os.environ.get("LUMO_NO_ANIM"))
     out()
-    print_header(out, w, banner_style(ctx), animate=anim)
+    print_header(out, w, banner_style(ctx))
     out()
     if ctx.cfg.get("model") == ROUTER_MODEL:
         out("  " + warn("!") + dim(" %s picks a different model on every request. Choose one with /models." % ROUTER_MODEL))
@@ -156,18 +155,14 @@ def banner(ctx):
 
 
 def cmd_banner(ctx, arg):
-    """/banner [aurora|shadow|mini] [anim on|off]: show the banner again; the style is remembered."""
+    """/banner [bold|mini]: show the banner again; the style is remembered."""
     sub = (arg[0].lower() if arg else "")
     sub = STYLE_ALIASES.get(sub, sub)
     if sub in STYLES:
         ctx.cfg["banner_style"] = sub
         save_config(ctx.cfg)
-    elif sub == "anim":
-        ctx.cfg["banner_anim"] = (arg[1].lower() != "off") if len(arg) > 1 else not ctx.cfg.get("banner_anim", True)
-        save_config(ctx.cfg)
-        out("  " + ok("✓ ") + dim("banner animation " + ("on" if ctx.cfg["banner_anim"] else "off")))
     elif sub:
-        out("  " + dim("usage: /banner [%s] · /banner anim on|off" % "|".join(STYLES)))
+        out("  " + dim("usage: /banner [%s]" % "|".join(STYLES)))
         return
     banner(ctx)
 
@@ -306,8 +301,6 @@ def main():
                 if len(ctx.messages) > 60 or est_tokens(ctx.messages) > 30000:
                     compact_archive(ctx, quiet=True)                   # a long chat is archived (nothing is lost: history/archive/), the newest messages stay
                 out("  " + dim("Continuing the last conversation (%d messages). /clear starts over." % len(ctx.messages)))
-        else:
-            out("  " + dim("New session. The last conversation is in history/; /resume loads it."))
 
     if args.cont and load_session(ctx, "last"):
         out("  " + ok("✓ resumed the last session (%d messages)" % len(ctx.messages)))

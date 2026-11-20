@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("LUMO_HOME", tempfile.mkdtemp(prefix="lumo_test_home_"))
 
 from lumo.cli import *  # noqa: F401,F403,E402  (imports and registers every tool)
-from lumo import banner, client, multiagent, providers, scope  # noqa: E402
+from lumo import client, multiagent, providers, scope  # noqa: E402
 from lumo.agent import decide_intent  # noqa: E402
 from lumo.commands import handle_command, HELP, SLASH  # noqa: E402
 from lumo.prompts import build_system  # noqa: E402
@@ -282,18 +282,6 @@ class Persona(unittest.TestCase):
         self.assertNotIn("you finish tasks end to end with tools: build games", text.lower())
 
 
-class NewBanner(unittest.TestCase):
-    def test_sizes_and_widths(self):
-        self.assertEqual(len(banner.wordmark(60)), 6)
-        self.assertEqual(len(banner.wordmark(40)), 4)
-        self.assertEqual(len(banner.wordmark(34)), 3)
-        self.assertEqual(banner.wordmark(20), [])
-        for w in (30, 34, 40, 44, 60, 100):
-            for line in banner.header_lines(w):
-                self.assertLessEqual(vlen(ANSI_RE.sub("", line)), w, (w, line))
-
-
-
 class VideoDirector(unittest.TestCase):
     """The automatic camera, the rim light and the framing check of lumovideo 1.3."""
 
@@ -474,7 +462,8 @@ class MAHandler(http.server.BaseHTTPRequestHandler):
         sub = [t for t in tools if t.get("type") == "openrouter:subagent"]
         last = msgs[-1] if msgs else {}
         E2E["log"].append({"model": model, "server_tool": bool(sub), "server_model": sub[0]["parameters"].get("model") if sub else None, "names": names,
-                           "last_role": last.get("role"), "last": last.get("content") if last.get("role") == "tool" else None})
+                           "last_role": last.get("role"), "last": last.get("content") if last.get("role") == "tool" else None,
+                           "users": [str(m.get("content"))[:80] for m in msgs if m.get("role") == "user"]})
         sc = E2E["scenario"]
         if sc == "selftest":                                       # /multiagent test: the server-tool probe, the local worker and the digest
             if body.get("stream") is False and sub:
@@ -493,6 +482,8 @@ class MAHandler(http.server.BaseHTTPRequestHandler):
             if last.get("role") == "tool":
                 return _sse(self, _text("notes.txt says: hello from the worker"))
             return _sse(self, _call("read_file", {"path": "notes.txt"}, "w_1"))
+        if sc == "ok2" and model != LIGHT:
+            return _sse(self, _text("Baik."))
         if sc == "ping" and model != LIGHT:
             return _sse(self, _text("Halo! Ada yang bisa saya bantu?"))
         if sc == "install":                                        # the model tries to install packages on its own
@@ -578,83 +569,11 @@ class EndToEnd(unittest.TestCase):
         self.assertNotIn("notes.txt", " ".join(tool_msgs))
 
 
-class AuroraBanner(unittest.TestCase):
-    """The v1.11 banner: emblem + letter-spaced title + gradient card, for every screen width."""
-
-    def test_the_emblem_is_a_ring_with_a_star(self):
-        for n in (10, 12, 16):
-            em = banner.emblem(n)
-            self.assertEqual(len(em), n // 2)
-            self.assertTrue(all(vlen(ANSI_RE.sub("", l)) == n for l in em), n)
-        pix = banner.emblem_pixels(16)
-        centre = pix[8][8]
-        self.assertGreater(centre[1], 0.5)                          # the star shines in the middle
-        self.assertEqual(pix[0][0][1], 0.0)                         # the corners stay transparent
-        ring = [pix[8][x][1] for x in range(0, 3)]
-        self.assertGreater(max(ring), 0.5)                          # and the ring is there
-
-    def test_layouts_fit_every_width(self):
-        for w in (24, 28, 32, 34, 36, 38, 40, 42, 44, 50, 60, 72, 100):
-            for style in banner.STYLES:
-                for line in banner.header_lines(w, style):
-                    self.assertLessEqual(vlen(ANSI_RE.sub("", line)), w, (w, style, line))
-        self.assertEqual(len(banner.header_lines(72)), 8)           # bold LUMO: 5 rows + beam + "C O D E" + version
-        self.assertEqual(len(banner.header_lines(44)), 8)
-        self.assertLess(len(banner.header_lines(38)), 8)            # narrower: the thin logotype
-
-    def test_the_default_logo_is_crisp(self):
-        rows = banner.slab_rows()
-        self.assertEqual(len(rows), 5)
-        self.assertTrue(all(vlen(r) == 38 for r in rows))
-        for r in rows:                                               # solid half blocks only: no shades, no blended edges
-            self.assertEqual(set(ANSI_RE.sub("", r)) - set(" ▀▄█"), set())
-        self.assertEqual(banner.STYLE_ALIASES["aurora"], "bold")
-        self.assertEqual(banner.header_lines(72, "aurora"), banner.header_lines(72, "bold"))
-
-    def test_other_styles(self):
-        self.assertEqual(len(banner.header_lines(60, "mini")), 1)
-        self.assertEqual(len(banner.header_lines(60, "shadow")), 9)
-        self.assertEqual(len(banner.header_lines(36, "shadow")), len(banner.header_lines(36)))     # too narrow: falls back to the thin logotype
-        self.assertTrue(any("L U M O" in ANSI_RE.sub("", l) for l in banner.header_lines(60, "emblem")))
-
-    def test_termux_gets_truecolor_even_without_colorterm(self):
-        env = {k: v for k, v in os.environ.items() if k not in ("COLORTERM", "LUMO_COLOR", "TERMUX_VERSION", "PREFIX")}
-        with mock.patch.dict(os.environ, env, clear=True):
-            self.assertFalse(banner._truecolor())
-        with mock.patch.dict(os.environ, dict(env, TERMUX_VERSION="0.118"), clear=True):
-            self.assertTrue(banner._truecolor())
-        with mock.patch.dict(os.environ, dict(env, PREFIX="/data/data/com.termux/files/usr"), clear=True):
-            self.assertTrue(banner._truecolor())
-        with mock.patch.dict(os.environ, dict(env, COLORTERM="truecolor", LUMO_COLOR="256"), clear=True):
-            self.assertFalse(banner._truecolor())
-
-    def test_the_banner_command_switches_style_and_remembers_it(self):
-        ctx = make_ctx()
-        with mock.patch("lumo.cli.save_config"):
-            handle_command(ctx, "/banner mini")
-            self.assertEqual(ctx.cfg["banner_style"], "mini")
-            handle_command(ctx, "/banner shadow")
-            self.assertEqual(ctx.cfg["banner_style"], "shadow")
-            handle_command(ctx, "/banner aurora")
-            self.assertEqual(ctx.cfg["banner_style"], "bold")
-            handle_command(ctx, "/banner anim off")
-            self.assertIs(ctx.cfg["banner_anim"], False)
-        self.assertIn("/banner", SLASH)
-        self.assertIn("/banner", HELP)
-
-    def test_animation_never_runs_without_a_terminal(self):
-        lines, slept = [], []
-        with mock.patch("lumo.banner.time.sleep", lambda s: slept.append(s)):
-            banner.print_header(lines.append, 60, "aurora", animate=False)
-        self.assertEqual(slept, [])
-        self.assertGreater(len(lines), 4)
-
-
 class StayOnTopic(unittest.TestCase):
     """A greeting never goes back to old work, and nothing is installed unless the user asked (the 'woii' -> `pkg search ...` bug)."""
 
     def test_pings_and_greetings_are_vague_real_requests_are_not(self):
-        for t in ("woii", "Woi", "halo", "p", "?", "wkwk", "yo", "hmm", "ok", "lumo", "woi lumo", "kamu siapa?", "terima kasih"):
+        for t in ("woii", "Woi", "halo", "p", "?", "wkwk", "yo", "hmm", "lumo", "woi lumo", "kamu siapa?", "terima kasih"):
             self.assertTrue(scope.is_vague(t), t)
         for t in ("buatkan game snake", "cuaca jakarta hari ini", "hitung 17*23", "install pillow", "perbaiki game.py", "lanjut", "apa itu rekursi"):
             self.assertFalse(scope.is_vague(t), t)

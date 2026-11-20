@@ -46,22 +46,17 @@ def ask_outside(ctx, paths, action):
     ctx.warned_outside = True
     bar = err("▍")
     out()
-    out("  %s %s%s" % (bar, bold(err("WARNING")), dim("  access outside the workspace")))
-    if first:
-        for l in ("The AI is asking to touch locations outside the project folder.",
-                  "This can read, change or delete data on your device or system.",
-                  "Approve only if you understand the request and trust it."):
-            out("  %s %s" % (bar, dim(l)))
-    out("  %s %s %s" % (bar, dim("action"), clip(action, tw() - 14)))
+    out("  %s %s" % (bar, "Outside the workspace" + ("" if not first else dim("  (this can read, change or delete other data on the device)"))))
+    out("  %s %s" % (bar, dim(clip(action, tw() - 8))))
     for p in paths[:4]:
-        out("  %s %s %s" % (bar, dim("locations"), clip(str(p), tw() - 14)))
+        out("  %s %s" % (bar, dim(clip(str(p), tw() - 8))))
     if len(paths) > 4:
-        out("  %s %s" % (bar, dim("… +%d more locations" % (len(paths) - 4))))
+        out("  %s %s" % (bar, dim("… +%d more" % (len(paths) - 4))))
     if system:
-        out("  %s %s" % (bar, err("SYSTEM area: high risk, can damage the device")))
-        hint = "type 'yes' to continue, anything else denies ›"
+        out("  %s %s" % (bar, err("System area: can damage the device.")))
+        hint = "type 'yes' to continue, anything else says no ›"
     else:
-        hint = "[y] once · [d] allow this folder · [n] deny ›"
+        hint = "[y] once · [d] this folder · [n] no ›"
     try:
         ans = input(rl("  %s %s " % (bar, dim(hint)))).strip().lower()
     except EOFError:

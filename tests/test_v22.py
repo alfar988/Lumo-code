@@ -21,6 +21,9 @@ import test_v21 as T21  # noqa: E402  (the fake OpenRouter and the helpers)
 from test_v21 import fake_reply, make_ctx  # noqa: E402
 from lumo import multiagent, state  # noqa: E402
 from lumo.commands import handle_command  # noqa: E402
+from lumo import banner, scope  # noqa: E402
+from lumo.agent import decide_intent  # noqa: E402
+from lumo.ui import ANSI_RE, vlen  # noqa: E402
 
 
 def free_ctx(left, **cfg):
@@ -296,9 +299,10 @@ class QuietStartup(unittest.TestCase):
 
     def test_the_startup_has_the_logo_and_no_table(self):
         out = self.run_cli("/exit\n")
-        self.assertIn("C O D E", out)
-        self.assertIn("/help for commands", out)
-        for gone in ("provider ", "fallback", "history/ (automatic)", "outside: ask", "Ask anything", "╭─ session", "switches model on errors"):
+        self.assertIn("Lumo Code", out)
+        self.assertIn("/help", out)
+        for gone in ("provider ", "fallback", "history/ (automatic)", "outside: ask", "Ask anything", "╭─ session", "switches model on errors", "AI agent for the terminal",
+                     "C O D E", "Q&A mode", "New session", "a new start"):
             self.assertNotIn(gone, out, gone)
 
     def test_status_still_has_the_details(self):
@@ -336,6 +340,167 @@ class QuietStartup(unittest.TestCase):
         src = (ROOT / "lumo" / "multiagent.py").read_text()
         for sym in ("◈", "✦ ", "↺", "↻"):
             self.assertNotIn(sym, src.replace('"✦"', ""), sym)          # the beam's spark in banner.py is a drawing; here only words
+
+
+class LogoBanner(unittest.TestCase):
+    """LUMO in background-coloured cells (no block glyphs, so no seams on phone fonts), no tagline, no decorations."""
+
+    def test_the_logo_is_drawn_with_background_colours(self):
+        with mock.patch.object(banner, "USE_COLOR", True), mock.patch.object(banner, "_utf8", lambda: True):
+            for cell in (1, 2):
+                rows = banner.logo_rows(cell)
+                self.assertEqual(len(rows), 7)
+                for r in rows:
+                    plain = ANSI_RE.sub("", r)
+                    self.assertEqual(set(plain), {" "})                      # spaces only: the colour is the background
+                    self.assertEqual(vlen(plain), 28 * cell)
+                    self.assertIn("48;", r) if r.strip() and ANSI_RE.sub("", r).strip() == "" and "\033[48" in r else None
+                self.assertTrue(any("\033[48;" in r for r in rows))
+                self.assertFalse(any(ch in "".join(rows) for ch in "▀▄█▌▐"))
+
+    def test_without_colour_it_falls_back_to_full_blocks(self):
+        with mock.patch.object(banner, "USE_COLOR", False), mock.patch.object(banner, "_utf8", lambda: True):
+            rows = banner.logo_rows(2)
+        self.assertTrue(all(set(r) <= {" ", "█"} for r in rows))
+        self.assertTrue(any("█" in r for r in rows))
+
+    def test_layouts_fit_every_width(self):
+        for w in range(20, 121, 5):
+            for style in banner.STYLES:
+                for line in banner.header_lines(w, style):
+                    self.assertLessEqual(vlen(ANSI_RE.sub("", line)), w, (w, style, line))
+        self.assertEqual(len(banner.header_lines(72)), 9)            # 7 rows, a blank line, the name
+        self.assertEqual(len(banner.header_lines(40)), 9)
+        self.assertEqual(len(banner.header_lines(24)), 1)            # too narrow for the logo: just the name
+        self.assertEqual(len(banner.header_lines(72, "mini")), 1)
+        self.assertEqual(vlen(banner.header_lines(72)[0]), 2 + 56)
+        self.assertEqual(vlen(banner.header_lines(40)[0]), 2 + 28)
+
+    def test_nothing_decorative_is_left(self):
+        text = "\n".join(ANSI_RE.sub("", l) for l in banner.header_lines(72))
+        for gone in ("AI agent for the terminal", "C O D E", "✦", "◈", "━"):
+            self.assertNotIn(gone, text, gone)
+        self.assertIn("Lumo Code", text)
+
+    def test_old_style_names_still_work(self):
+        self.assertEqual(banner.header_lines(72, "aurora"), banner.header_lines(72, "bold"))
+        self.assertEqual(banner.header_lines(72, "shadow"), banner.header_lines(72, "bold"))
+        self.assertEqual(banner.header_lines(72, "none"), banner.header_lines(72, "mini"))
+
+    def test_termux_gets_truecolor_even_without_colorterm(self):
+        env = {k: v for k, v in os.environ.items() if k not in ("COLORTERM", "LUMO_COLOR", "TERMUX_VERSION", "PREFIX")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertFalse(banner._truecolor())
+        with mock.patch.dict(os.environ, dict(env, TERMUX_VERSION="0.118"), clear=True):
+            self.assertTrue(banner._truecolor())
+        with mock.patch.dict(os.environ, dict(env, COLORTERM="truecolor", LUMO_COLOR="256"), clear=True):
+            self.assertFalse(banner._truecolor())
+
+    def test_the_banner_command_remembers_the_style(self):
+        ctx = make_ctx()
+        with mock.patch("lumo.cli.save_config"):
+            handle_command(ctx, "/banner mini")
+            self.assertEqual(ctx.cfg["banner_style"], "mini")
+            handle_command(ctx, "/banner aurora")
+            self.assertEqual(ctx.cfg["banner_style"], "bold")
+
+
+class ContinueAndHistory(unittest.TestCase):
+    """'lanjutkan kerja mu!' in a fresh session brings the last conversation back; it no longer digs through the transcript."""
+
+    @classmethod
+    def setUpClass(cls):
+        import http.server
+        import threading
+        cls.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), T21.MAHandler)
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+
+    def run_cli(self, ws, prompt):
+        import shutil
+        T21.E2E["scenario"], T21.E2E["log"] = "ok2", []
+        home = Path(tempfile.mkdtemp(prefix="cont_home_"))
+        env = dict(os.environ, LUMO_API_BASE="http://127.0.0.1:%d/api/v1" % self.port, LUMO_HOME=str(home), OPENROUTER_API_KEY="sk-or-test-1234567890", NO_COLOR="1",
+                   PYTHONIOENCODING="utf-8")
+        p = subprocess.run([sys.executable, str(ROOT / "run.py"), str(ws), "-m", T21.SMART, "--auto", "-p", prompt], env=env, capture_output=True, text=True, timeout=120, cwd=str(ROOT))
+        self.addCleanup(shutil.rmtree, str(home), True)
+        return p.stdout + p.stderr, list(T21.E2E["log"])
+
+    def saved_workspace(self):
+        from lumo.memory import save_history
+        ws = Path(tempfile.mkdtemp(prefix="cont_ws_"))
+        ctx = state.Ctx({"provider": "openrouter", "model": T21.SMART}, ws)
+        ctx.messages = [{"role": "user", "content": "buat landing page top up"}, {"role": "assistant", "content": "index.html sudah dibuat, tinggal animasi."}]
+        ctx.plan, ctx.plan_active = {"title": "Top-Up Landing Page"}, True
+        ctx.todos = [{"content": "Add animations", "status": "pending"}]
+        ctx.task = "buat landing page top up"
+        save_history(ctx, "start")
+        return ws
+
+    def test_continue_loads_the_last_conversation_first(self):
+        import shutil
+        ws = self.saved_workspace()
+        self.addCleanup(shutil.rmtree, str(ws), True)
+        out, log = self.run_cli(ws, "lanjutkan kerja mu!")
+        self.assertIn("Loaded the last conversation (2 messages).", out)
+        self.assertTrue(log, out)
+        self.assertIn("buat landing page top up", " ".join(log[0]["users"]))             # the model sees the earlier request, so it does not need the transcript
+
+    def test_continue_with_nothing_saved_says_so_without_a_request(self):
+        import shutil
+        ws = Path(tempfile.mkdtemp(prefix="cont_empty_"))
+        self.addCleanup(shutil.rmtree, str(ws), True)
+        out, log = self.run_cli(ws, "lanjutkan")
+        self.assertIn("Nothing to continue in this folder.", out)
+        self.assertEqual(log, [])
+
+    def test_no_mode_labels(self):
+        import shutil
+        ws = Path(tempfile.mkdtemp(prefix="cont_label_"))
+        self.addCleanup(shutil.rmtree, str(ws), True)
+        out, _log = self.run_cli(ws, "jelaskan apa itu rekursi")
+        self.assertNotIn("Q&A mode", out)
+        self.assertNotIn("◇", out)
+
+    def test_confirmations_are_answers_not_pings(self):
+        for t in ("ya", "iya", "ok", "oke", "sip", "siap", "yes", "lanjut", "gas", "boleh"):
+            self.assertFalse(scope.is_vague(t), t)
+            self.assertEqual(decide_intent(make_ctx(), t)[0], "task", t)
+        for t in ("woii", "halo", "p", "wkwk", "?"):
+            self.assertTrue(scope.is_vague(t), t)
+
+    def test_the_transcript_is_searched_or_read_in_small_pieces(self):
+        ctx = make_ctx()
+        scope.note_request(ctx, "lanjutkan kerja mu!", "task", True)
+        blocked = scope.guard(ctx, "read_file", {"path": "history/transcript.md"})
+        self.assertTrue(blocked and blocked.startswith("SKIPPED: history files are long"))
+        self.assertTrue(scope.guard(ctx, "read_file", {"path": "history/transcript.md", "start_line": 1, "end_line": 400}))
+        self.assertIsNone(scope.guard(ctx, "read_file", {"path": "history/transcript.md", "start_line": 3000, "end_line": 3100}))
+        self.assertIsNone(scope.guard(ctx, "read_file", {"path": "history/archive/old.md", "start_line": 1, "end_line": 120}))
+        third = scope.guard(ctx, "read_file", {"path": "history/transcript.md", "start_line": 1, "end_line": 50})
+        self.assertTrue(third and "twice per task" in third)                          # at most two small reads per task
+        self.assertIsNone(scope.guard(ctx, "read_file", {"path": "index.html"}))      # other files are not affected
+        ctx2 = make_ctx()
+        scope.note_request(ctx2, "lihat history/notes.md", "task", False)
+        self.assertIsNone(scope.guard(ctx2, "read_file", {"path": "history/notes.md"}))
+
+    def test_the_outside_workspace_question_is_short_and_calm(self):
+        from lumo import security
+        ctx = make_ctx()
+        lines = []
+        with mock.patch.object(security, "out", lambda *a: lines.append(a[0] if a else "")), mock.patch("builtins.input", return_value="n"):
+            allowed, _scope = security.ask_outside(ctx, ["/data/data/com.termux/files/home/lt-test"], "node test.js")
+        text = "\n".join(ANSI_RE.sub("", l) for l in lines)
+        self.assertFalse(allowed)
+        self.assertIn("Outside the workspace", text)
+        self.assertIn("node test.js", text)
+        self.assertIn("lt-test", text)
+        self.assertNotIn("WARNING", text)
+        self.assertNotIn("Approve only if", text)
 
 
 if __name__ == "__main__":

@@ -169,6 +169,21 @@ def auto_restore(ctx):
     return d
 
 
+def restore_for_continue(ctx):
+    """'continue' in a fresh session: bring the last conversation of this folder back first (messages, plan, todos, handoff), so the model works from it
+    instead of digging through history files. Returns the saved state, or None when there is nothing to continue."""
+    d = load_history(ctx)
+    if not d:
+        return None
+    try:
+        from lumo.compact import compact_archive, est_tokens
+        if len(ctx.messages) > 60 or est_tokens(ctx.messages) > 30000:
+            compact_archive(ctx, quiet=True)
+    except Exception:
+        pass
+    return d
+
+
 def history_age_hours(st):
     """Hours since the saved conversation was written (None when unknown)."""
     try:

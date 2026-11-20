@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from lumo import guard, multiagent, safelimit, scope
+from lumo.memory import restore_for_continue
 from lumo.client import err_reason, stream_chat
 from lumo.config import (
     CHAT_TOOLS, MAX_ROT_PER_TURN, MAX_STEPS, PLAN_MAX_STEPS, PLAN_TOOLS, SNAP_IGNORE, WEB_TOOLS,
@@ -681,6 +682,12 @@ def run_turn(ctx, user_text):
     intent, need_plan = decide_intent(ctx, user_text)
     ctx.intent = intent
     cont = intent == "task" and is_continuation(user_text)    # "continue", "lanjut", /resume: the earlier work goes on
+    if cont and not ctx.messages and not is_resume_prompt(user_text):
+        if restore_for_continue(ctx):                         # "continue" after a restart: the last conversation comes back, no digging through history files
+            out("  " + dim("Loaded the last conversation (%d messages)." % len(ctx.messages)))
+        else:
+            out("  " + dim("Nothing to continue in this folder. Tell me what to do."))
+            return
     scope.note_request(ctx, user_text, intent, cont)         # does this request concern the workspace? (reading tools stay shut otherwise)
     if multiagent.enabled(ctx) and intent != "chat" and not getattr(ctx, "ma_checked", False):
         ctx.ma_checked = True
@@ -702,12 +709,8 @@ def run_turn(ctx, user_text):
     if not picked and ctx.active_skills and cont:
         picked = list(ctx.active_skills)  # "continue", "yes", ...: keep the previous skills
     ctx.active_skills = picked
-    if intent == "chat":
-        out("  " + dim("◇ Q&A mode"))
-    elif intent == "build":
-        out("  " + dim("◇ build mode" + (" · research and plan first" if need_plan and ctx.cfg.get("plan", True) else "")))
     if ctx.active_skills:
-        out("  " + dim("◇ skills: " + ", ".join(ctx.active_skills)))
+        out("  " + dim("skills: " + ", ".join(ctx.active_skills)))
     before, comp_before = snapshot(ctx.ws)
     ctx.messages.append({"role": "user", "content": expand_mentions(ctx, user_text)})
     if not is_resume_prompt(user_text):

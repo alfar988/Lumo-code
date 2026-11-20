@@ -33,7 +33,7 @@ _WORKSPACE = re.compile(r"\b(file|files|berkas|folder|direktori|directory|dir|pa
 _PATHLIKE = re.compile(r"(?<!\w)(?:~|\.{1,2})?/[\w.\-]+|[\w\-]+\.(?:py|js|ts|tsx|jsx|html|css|json|md|txt|yml|yaml|toml|java|kt|c|cpp|h|go|rs|sh|zip|tar|gz|mp4|png|jpg|csv|sql|php|rb)\b|@[\w./\-]+")
 
 _SMALLTALK = re.compile(
-    r"^\s*(hai|halo|hello|hi|hey|hei|oi|p|pagi|siang|sore|malam|selamat\s+\w+|terima kasih|makasih|thanks?|thank you|ok(?:e|ay)?|sip|mantap|bagus|keren|"
+    r"^\s*(hai|halo|hello|hi|hey|hei|oi|p|pagi|siang|sore|malam|selamat\s+\w+|terima kasih|makasih|thanks?|thank you|mantap|bagus|keren|"
     r"siapa (?:kamu|anda)|kamu siapa|who are you|apa kabar|how are you|bisa apa|kamu bisa apa|what can you do)\b[\s\S]{0,40}$", re.I)
 
 _NO_FILES = re.compile(r"\b(tanpa|jangan|don'?t|do not|no need to)\b.{0,24}\b(baca|read|buka|open|lihat|cek|file|folder|scan)\b", re.I)
@@ -42,7 +42,7 @@ _NO_FILES = re.compile(r"\b(tanpa|jangan|don'?t|do not|no need to)\b.{0,24}\b(ba
 # A ping, an interjection, a laugh, a bare "ok": nothing to act on. (Typed with doubled letters: "woii", "haloo", "yooo".)
 _PING = re.compile(
     r"^\s*(?:w+o+i+|w+o+y+|w+o+e+|w+e+i+|w+e+h+|o+i+|o+y+|y+o+|h+o+i+|h+e+y+|h+e+i+|h+a+l+o+|h+a+i+|h+i+|h+e+l+l+o+|p+|t+e+s+t*|ping|bro|bang|sis|kak|min|bot|ai|lumo|lu|"
-    r"assalamu\W?alaikum|permisi|misi|ok+e*|sip|siap|h+m+|iya|ya+|yup|nah|nih|wk(?:wk)*\w*|ha(?:ha)+\w*|he(?:he)+\w*|lol|anj\w*|njir|wah|waduh|aduh|loh|lho|lah|kok|hah|e+h+|ha|gimana|gmn|apa|kenapa|napa)"
+    r"assalamu\W?alaikum|permisi|misi|h+m+|nah|nih|wk(?:wk)*\w*|ha(?:ha)+\w*|he(?:he)+\w*|lol|anj\w*|njir|wah|waduh|aduh|loh|lho|lah|kok|hah|e+h+|ha|gimana|gmn|apa|kenapa|napa)"
     r"(?:\s+(?:lumo|lu|bro|bang|kak|min|bot|ai))?[\s!?.,~]*$", re.I)
 
 
@@ -134,8 +134,22 @@ def note_request(ctx, text, intent, continuation):
     ctx.scope_text = (text or "")
 
 
+_HISTORY_FILE = re.compile(r"(^|/)history/(transcript\.md|archive/|events\.|state\.json)", re.I)
+HISTORY_READ_LINES = 150
+
+
 def guard(ctx, name, args):
     """None when the tool call may go ahead; otherwise the tool result that replaces it."""
+    if name == "read_file" and _HISTORY_FILE.search(str(args.get("path") or "").replace("\\", "/")):
+        # The transcript is thousands of lines. Reading it in chunks burns requests and context: search it, or read a small piece, twice at most.
+        first, last = int(args.get("start_line") or 1), args.get("end_line")
+        span = (int(last) - first + 1) if last else 400
+        if span > HISTORY_READ_LINES or ctx.turn.get("hist_reads", 0) >= 2:
+            ctx.turn["scope_blocked"] = ctx.turn.get("scope_blocked", 0) + 1
+            return ("SKIPPED: history files are long (the transcript has thousands of lines). Search them with search_files or recall using a keyword, or read at most "
+                    "%d lines at a time, twice per task. If the user asked to continue, the last conversation is already in this chat." % HISTORY_READ_LINES)
+        ctx.turn["hist_reads"] = ctx.turn.get("hist_reads", 0) + 1
+        return None
     if name not in EXPLORE_TOOLS or getattr(ctx, "ma_depth", 0):
         return None
     if getattr(ctx, "scope_reason", "x"):
