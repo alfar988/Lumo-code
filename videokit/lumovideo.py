@@ -16,7 +16,7 @@ internet), Video (scenes, render, checks), Stick/Fight/Stage (stickman character
 (components), play_hints/open_video (how to watch the result).
 """
 
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 
 import array
 import bisect
@@ -2084,6 +2084,7 @@ class Video(_Helpful):
         self.quality = quality or "standard"
         self.scenes = []
         self.sounds = []
+        self._problems = []                                    # bad v.sfx(...) calls, reported together by render()
         self._fonts_ok = None
 
     # ---- building ----
@@ -2112,7 +2113,21 @@ class Video(_Helpful):
     def sfx(self, what, at=0.0, vol=1.0, pan=0.0, **kw):
         """Add a sound effect by name: v.sfx('punch', 1.5), v.sfx('whoosh', 0.9, vol=0.6, dur=0.4). `what` can also be a buffer.
         Names: see sfx.names(); each call sounds a little different. Returns the buffer."""
-        buf = sfx.get(what, **kw) if isinstance(what, str) else what
+        if isinstance(what, str):
+            try:
+                buf = sfx.get(what, **kw)
+            except (ValueError, TypeError) as e:                  # collected, not raised: render() reports every bad sound at once (one edit fixes them all)
+                msg = str(e)
+                if isinstance(e, TypeError) and hasattr(sfx, what):
+                    try:
+                        opts = [n for n in inspect.signature(getattr(sfx, what)).parameters if n not in ("self", "variant")]
+                        msg += "  Options of %r: %s" % (what, ", ".join(opts) or "none")
+                    except (TypeError, ValueError):
+                        pass
+                self._problems.append("v.sfx(%r, %s): %s" % (what, at, msg))
+                return None
+        else:
+            buf = what
         self.sounds.append((buf, at, vol, pan))
         return buf
 
@@ -2326,6 +2341,13 @@ class Video(_Helpful):
             raise RuntimeError("Pillow is not installed: pkg install python-pillow  (or: pip install pillow)")
         if not self.scenes:
             raise RuntimeError("the video has no scenes yet: call v.scene(duration, draw_function) before v.render()")
+        if self._problems:
+            names = ""
+            for pr in self._problems:                                # the list of valid names is long: print it once, not once per problem
+                if "Valid sound effect names" in pr:
+                    names = pr[pr.index("Valid sound effect names"):]
+            body = "\n".join("- " + (pr[:pr.index("Valid sound effect names")].rstrip() if "Valid sound effect names" in pr else pr) for pr in self._problems)
+            raise ValueError("%d sound problem%s, fix them all in one edit:\n%s%s" % (len(self._problems), "" if len(self._problems) == 1 else "s", body, ("\n" + names) if names else ""))
         q = os.environ.get("LUMO_VIDEO_QUALITY") or quality or self.quality
         if q not in QUALITY:
             raise _unknown("quality", q, QUALITY)

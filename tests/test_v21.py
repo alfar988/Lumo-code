@@ -393,7 +393,7 @@ class VideoDirector(unittest.TestCase):
         text = (ROOT / "skills" / "video-skill.md").read_text()
         for needle in ("Stay on the request", "automatic camera", "focus(", "outside the picture"):
             self.assertIn(needle, text)
-        self.assertEqual(self.lv.__version__, "1.3.1")
+        self.assertEqual(self.lv.__version__, "1.3.2")
 
 
 # ---------------------------------------------------------------------------------------------------------------------------
@@ -486,10 +486,10 @@ class MAHandler(http.server.BaseHTTPRequestHandler):
             return _sse(self, _text("Baik."))
         if sc == "ping" and model != LIGHT:
             return _sse(self, _text("Halo! Ada yang bisa saya bantu?"))
-        if sc == "install":                                        # the model tries to install packages on its own
+        if sc == "install":                                        # the model tries to install packages while only answering a question
             if last.get("role") == "tool":
                 return _sse(self, _text("ok"))
-            return _sse(self, _call("run_shell", {"command": "pkg search pillow pyarrow protobuf pydeck altair"}))
+            return _sse(self, _call("run_python", {"code": "import os; os.system('pip install pillow')"}))
         if sc == "scope":                                          # small talk: the model reaches for the folder anyway
             if last.get("role") == "tool":
                 return _sse(self, _text("Hi!"))
@@ -558,9 +558,9 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("Halo", out)
 
     def test_an_install_the_model_tries_on_its_own_is_skipped(self):
-        out, log = self.run_lumo("install", "jalankan app.py lalu tunjukkan hasilnya")
+        out, log = self.run_lumo("install", "jelaskan apa itu rekursi")
         tool_msgs = [r["last"] for r in log if r["last"]]
-        self.assertTrue(tool_msgs and tool_msgs[0].startswith("SKIPPED: nobody asked to install"), tool_msgs)
+        self.assertTrue(tool_msgs and tool_msgs[0].startswith("SKIPPED: nothing is being built or run"), tool_msgs)
 
     def test_small_talk_never_opens_the_folder(self):
         out, log = self.run_lumo("scope", "jelaskan apa itu rekursi")
@@ -584,7 +584,7 @@ class StayOnTopic(unittest.TestCase):
         for cmd in ("pkg search pillow pyarrow protobuf pydeck altair", "pip install streamlit", "python -m pip install x", "apt update && apt install -y python",
                     "npm install express", "cd x && pip3 install -r requirements.txt", "sudo apt-get upgrade"):
             res = scope.install_guard(ctx, "run_shell", {"command": cmd})
-            self.assertTrue(res and res.startswith("SKIPPED: nobody asked to install"), cmd)
+            self.assertTrue(res and res.startswith("SKIPPED: nothing is being built or run"), cmd)
         for cmd in ("ls -la", "python app.py", "echo hi | pip --version", "node server.js"):
             self.assertIsNone(scope.install_guard(ctx, "run_shell", {"command": cmd}), cmd)
         self.assertTrue(scope.install_guard(ctx, "run_python", {"code": "import subprocess; subprocess.run(['pip','install','x'])"}) is None
@@ -596,9 +596,7 @@ class StayOnTopic(unittest.TestCase):
         self.assertIsNone(scope.install_guard(ctx, "run_shell", {"command": "pip install pillow"}))
         ctx = make_ctx()
         ctx.vague, ctx.scope_text, ctx.scope_reason = False, "jalankan game.py", "hint"
-        self.assertTrue(scope.install_guard(ctx, "run_shell", {"command": "pip install pygame"}))
-        scope.note_result(ctx, "Traceback...\nModuleNotFoundError: No module named 'pygame'")
-        self.assertIsNone(scope.install_guard(ctx, "run_shell", {"command": "pip install pygame"}))
+        self.assertIsNone(scope.install_guard(ctx, "run_shell", {"command": "pip install pygame"}))      # working on a task: a missing module is installed at once
         ctx.vague = True                                            # but never on a greeting
         self.assertTrue(scope.install_guard(ctx, "run_shell", {"command": "pip install pygame"}))
 

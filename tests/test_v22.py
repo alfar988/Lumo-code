@@ -512,5 +512,125 @@ class ContinueAndHistory(unittest.TestCase):
         self.assertNotIn("Approve only if", text)
 
 
+class AutoInstall(unittest.TestCase):
+    """While Lumo works on a task it installs what is missing at once; in a greeting or a plain answer it never installs anything."""
+
+    def turn(self, text, intent):
+        ctx = make_ctx()
+        ctx.intent = intent
+        scope.note_request(ctx, text, intent, False)
+        return ctx
+
+    def test_installs_run_without_asking_while_working(self):
+        cmds = ("pkg install ffmpeg python-pillow -y", "pkg install ffmpeg python-pillow -y 2>&1", "apt update && apt install -y ffmpeg python3-pil",
+                "pip install pillow --break-system-packages 2>&1", 'sh -c "pkg install ffmpeg python-pillow -y"', "pkg search ffmpeg", "npm install express")
+        for text, intent in (("buatin gw vidio tentang hutan amazon", "build"), ("installin dong bahan bahan yg di perlukan tanpa error", "task"),
+                             ("jalankan game.py", "task"), ("perbaiki error di app.py", "task")):
+            ctx = self.turn(text, intent)
+            for cmd in cmds:
+                self.assertIsNone(scope.install_guard(ctx, "run_shell", {"command": cmd}), (text, cmd))
+            self.assertIsNone(scope.install_guard(ctx, "run_python", {"code": "import os; os.system('pip install pillow')"}))
+
+    def test_but_never_for_a_greeting_or_a_plain_question(self):
+        for text, intent in (("woii", "chat"), ("halo", "chat"), ("gimana cara install ffmpeg di termux?", "chat"), ("jelaskan apa itu rekursi", "chat")):
+            ctx = self.turn(text, intent)
+            res = scope.install_guard(ctx, "run_shell", {"command": "pkg install -y ffmpeg"})
+            self.assertTrue(res and res.startswith("SKIPPED: nothing is being built or run"), text)
+
+    def test_system_wide_upgrades_need_a_request(self):
+        ctx = self.turn("buatin gw vidio tentang kucing", "build")
+        for cmd in ("pkg upgrade -y", "apt full-upgrade -y", "pkg uninstall python", "apt autoremove -y"):
+            res = scope.install_guard(ctx, "run_shell", {"command": cmd})
+            self.assertTrue(res and "changes the whole system" in res, cmd)
+        ctx = self.turn("tolong upgrade semua paket", "task")
+        self.assertIsNone(scope.install_guard(ctx, "run_shell", {"command": "pkg upgrade -y"}))
+
+    def test_everyday_ways_of_saying_install(self):
+        for w in ("installin", "instalin", "diinstall", "nginstal", "pasangin", "downloadin", "install", "unduh", "setup"):
+            self.assertTrue(scope._INSTALL_WORDS.search("tolong %s ffmpeg dong" % w), w)
+
+    def test_the_prompt_tells_the_model_to_install_and_how_to_code(self):
+        from lumo.prompts import build_system
+        text = build_system(make_ctx(), "build")
+        self.assertIn("install it yourself right away", text)
+        self.assertIn("do not ask the user whether to install", text.lower().replace("do not ask the user whether to install", "do not ask the user whether to install"))
+        self.assertIn("never install or search for packages", text)
+        self.assertIn("## Writing code", text)
+        self.assertIn("fix every occurrence of the same mistake", text)
+
+    def test_the_code_quality_skill_rides_along_for_code_work_in_any_mode(self):
+        from lumo.skills import pick_skills
+        for cfg in ({}, {"multiagent": True}):
+            ctx = make_ctx(**cfg)
+            names = pick_skills(ctx, "buatin gw script python buat rename file", "build")
+            self.assertIn("code-quality-skill", names, cfg)
+        self.assertNotIn("code-quality-skill", pick_skills(make_ctx(), "apa itu rekursi", "chat"))
+
+
+class EditAwareLoopGuard(unittest.TestCase):
+    """'this identical call has already failed 3 times' must not fire after the script was edited or something was installed."""
+
+    def test_the_key_changes_when_the_workspace_changes(self):
+        from lumo.agent import loop_key
+        self.assertEqual(loop_key("render_video", {"path": "a.py"}), loop_key("render_video", {"path": "a.py"}, 0))
+        self.assertNotEqual(loop_key("render_video", {"path": "a.py"}, 0), loop_key("render_video", {"path": "a.py"}, 1))
+
+    def test_successful_changes_bump_the_sequence_reads_and_errors_do_not(self):
+        from lumo.agent import note_state_change
+        ctx = make_ctx()
+        note_state_change(ctx, "read_file", "[a.py · 10 lines]")
+        note_state_change(ctx, "edit_file", "ERROR: no match")
+        note_state_change(ctx, "run_shell", "SKIPPED: not needed")
+        self.assertEqual(ctx.turn.get("edit_seq", 0), 0)
+        note_state_change(ctx, "edit_file", "edited a.py (1 replacements)")
+        note_state_change(ctx, "run_shell", "done")
+        self.assertEqual(ctx.turn["edit_seq"], 2)
+
+    def test_three_failures_block_only_until_something_changes(self):
+        from lumo.agent import loop_check, loop_key, loop_record
+        ctx = make_ctx()
+        k0 = loop_key("render_video", {"path": "a.py"}, 0)
+        for _ in range(3):
+            loop_record(ctx, k0, "ERROR: boom")
+        self.assertTrue(loop_check(ctx, k0).startswith("ERROR: this identical call has already failed 3 times"))
+        k1 = loop_key("render_video", {"path": "a.py"}, 1)               # the script was edited in between
+        self.assertIsNone(loop_check(ctx, k1))
+
+
+class AllBadSoundsAtOnce(unittest.TestCase):
+    """lumovideo 1.3.2: v.sfx() with a wrong name or option no longer stops the script at the first one (15 s per try); render() lists them all."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("lumovideo_v22b", str(ROOT / "videokit" / "lumovideo.py"))
+        cls.lv = importlib.util.module_from_spec(spec)
+        sys.modules["lumovideo_v22b"] = cls.lv
+        spec.loader.exec_module(cls.lv)
+
+    def test_every_bad_sound_is_listed_in_one_error(self):
+        lv = self.lv
+        v = lv.Video(1280, 720)
+        v.scene(1.0, lambda c, t: None)
+        self.assertIsNotNone(v.sfx("hit", 1.0))                           # a good one works as before
+        self.assertIsNone(v.sfx("hiss", 2.0, vol=0.5))                    # nothing raised yet
+        v.sfx("buzz", 3.0, vol=0.3, dur=10.0)
+        v.sfx("zap", 4.0, dur=10.0)
+        with self.assertRaises(ValueError) as cm:
+            v.render()
+        msg = str(cm.exception)
+        self.assertIn("3 sound problems, fix them all in one edit", msg)
+        for needle in ("'hiss'", "'buzz'", "'zap'", "unexpected keyword argument 'dur'", "Options of 'zap'"):
+            self.assertIn(needle, msg)
+        self.assertEqual(msg.count("Valid sound effect names"), 1)         # the long list once, not once per problem
+
+    def test_a_script_without_bad_sounds_is_untouched(self):
+        lv = self.lv
+        v = lv.Video(1280, 720)
+        v.scene(1.0, lambda c, t: None)
+        v.sfx("hit", 0.5)
+        self.assertEqual(v._problems, [])
+        self.assertEqual(len(v.sounds), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

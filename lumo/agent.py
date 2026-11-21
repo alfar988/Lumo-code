@@ -596,11 +596,12 @@ def run_agent(ctx, phase, allowed, max_steps, stop_tool=None):
                 continue
             ctx.turn["tools"] += 1
             tool_header(name, args)
-            key = loop_key(name, args)
+            key = loop_key(name, args, ctx.turn.get("edit_seq", 0))
             res = (loop_check(ctx, key) or scope.guard(ctx, name, args) or scope.install_guard(ctx, name, args)
                    or prefetched.get(tc["id"]) or exec_tool(ctx, name, args))
             scope.note_result(ctx, res)
             loop_record(ctx, key, res)
+            note_state_change(ctx, name, res)
             if note:
                 res = res + "\n" + note
             failed = is_failure(name, res)
@@ -783,11 +784,20 @@ def note_recovery(ctx, name, res, failed):
         ctx.turn.setdefault("recovered", []).append("%s: %s" % (name, pend.pop(name)))
 
 
-def loop_key(name, args):
+def loop_key(name, args, seq=0):
+    """Identity of a call for the loop guard. `seq` counts the changes made to the workspace in this turn (an edit, an install ...): the same call after a change is
+    not the same call, so fixing a script and running it again is never mistaken for going in circles."""
     try:
-        return name + ":" + json.dumps(args, sort_keys=True, ensure_ascii=False)[:400]
+        return name + ":" + json.dumps(args, sort_keys=True, ensure_ascii=False)[:400] + ("@%d" % seq if seq else "")
     except (TypeError, ValueError):
         return name
+
+
+def note_state_change(ctx, name, res):
+    """A tool that is not read-only succeeded: the workspace (or the machine) is in a new state."""
+    from lumo.config import READ_TOOLS
+    if name not in READ_TOOLS and not str(res).startswith(("ERROR", "SKIPPED", "ISSUES")):
+        ctx.turn["edit_seq"] = ctx.turn.get("edit_seq", 0) + 1
 
 
 def loop_check(ctx, key):

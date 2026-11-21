@@ -60,13 +60,17 @@ def is_vague(text):
 _PKG = re.compile(
     r"(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+)(?:pkg|apt(?:-get)?|apt-cache|dpkg|pip3?|pipx|npm|npx|yarn|pnpm|cargo|gem|brew|conda|poetry|composer|go\s+(?:get|install))\s+"
     r"(?:-{1,2}\S+\s+)*(?:install|i|add|search|update|upgrade|full-upgrade|remove|uninstall|download|build|reinstall|autoremove)\b|\bpython3?\s+-m\s+pip\b", re.I)
-_INSTALL_WORDS = re.compile(r"\b(install|instal|menginstal|pasang|memasang|pip|pkg|apt|npm|yarn|pnpm|setup|set up|requirements?|dependenc\w*|librar(?:y|ies)|modul|module|paket|package|packages|upgrade|perbarui paket)\b", re.I)
+_INSTALL_WORDS = re.compile(r"instal|pasang|unduh|download|setup|set up|siapkan|upgrade|update|perbarui|uninstall|remove|hapus paket|purge|\\bpkg\\b|\\bpip\\b|\\bnpm\\b|\\bapt\\b", re.I)
+_HEAVY = re.compile(r"\b(upgrade|full-upgrade|dist-upgrade|autoremove|remove|uninstall|purge|reinstall)\b", re.I)    # changes the whole system, not just what the task needs
 _MISSING = re.compile(r"ModuleNotFoundError|No module named|ImportError: cannot import|Cannot find module|MODULE_NOT_FOUND|command not found|: not found\b|is not installed", re.I)
 
 
 def install_guard(ctx, name, args):
-    """None when the call may go ahead; otherwise the tool result that replaces it. Package managers run only when the user asked for it, or when a program
-    that the user asked for stopped on a missing piece in this very turn."""
+    """None when the call may go ahead; otherwise the tool result that replaces it.
+
+    While Lumo is working on a task (a request to build, fix, run or do something) a missing package or tool is installed right away: ffmpeg for a video, Pillow for
+    an image, a Node module. Package managers do NOT run when nothing is being worked on: a greeting, a question that only needs an answer. System-wide upgrades and
+    removals always need the user to ask."""
     if name not in ("run_shell", "run_python"):
         return None
     code = str(args.get("command") or args.get("code") or args.get("script") or "")
@@ -74,15 +78,16 @@ def install_guard(ctx, name, args):
         return None
     if getattr(ctx, "ma_depth", 0):
         return None
-    if getattr(ctx, "vague", False):
-        pass                                                   # a greeting never installs anything
-    elif _INSTALL_WORDS.search(getattr(ctx, "scope_text", "") or ""):
-        return None                                            # the user asked
-    elif ctx.turn.get("missing_dep") and getattr(ctx, "scope_reason", "x"):
-        return None                                            # the user's own task stopped on a missing module: fixing that is part of the task
+    working = not getattr(ctx, "vague", False) and getattr(ctx, "intent", "task") in ("build", "task")
+    asked = bool(_INSTALL_WORDS.search(getattr(ctx, "scope_text", "") or ""))
+    if working and (not _HEAVY.search(code) or asked):
+        return None
     ctx.turn["scope_blocked"] = ctx.turn.get("scope_blocked", 0) + 1
-    return ("SKIPPED: nobody asked to install anything. Do not run package managers (pkg, apt, pip, npm ...) on your own, and do not search for packages. "
-            "Do what the message asks with what is already there. If a program you were asked to run stops on something missing, say what is missing and ask.")
+    if working:
+        return ("SKIPPED: upgrading or removing packages changes the whole system and nobody asked for it. Install only what the task needs "
+                "(pkg install -y <name> on Termux), and carry on.")
+    return ("SKIPPED: nothing is being built or run in this message (it is a greeting or a question), so do not install or search for packages. "
+            "Answer the message. If the user wants something installed they will say so.")
 
 
 def note_result(ctx, result):

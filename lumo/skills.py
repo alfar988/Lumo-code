@@ -390,10 +390,12 @@ def pick_skills(ctx, text, intent, need_plan=False, phase="build", limit=MAX_ACT
         bonus["skill-memory-knowledge-management"] = 3.0
     if ERROR_PASTE_RX.search(text or ""):
         bonus["debug-skill"] = bonus.get("debug-skill", 0.0) + 4.0
-    if intent in ("build", "task"):
-        from lumo import multiagent
-        if multiagent.enabled(ctx):                       # multi-agent mode: the smart model codes to a higher standard
-            bonus["code-quality-skill"] = bonus.get("code-quality-skill", 0.0) + 3.5
+    code_work = intent in ("build", "task") and bool(re.search(
+        r"\b(kode|code|script|skrip|program|game|app|aplikasi|website|situs|fungsi|function|class|bug|error|fix|perbaiki|api|python|javascript|node|html|css|video|animasi|bot|tool)\b",
+        text or "", re.I))
+    from lumo import multiagent
+    if code_work and multiagent.enabled(ctx):             # multi-agent mode asks for the higher code standard: the skill competes for a slot
+        bonus["code-quality-skill"] = bonus.get("code-quality-skill", 0.0) + 3.5
     ws_bonus = {}
     for kind in workspace_hints(ctx):
         for nm in WS_BONUS.get(kind, ()):
@@ -420,6 +422,8 @@ def pick_skills(ctx, text, intent, need_plan=False, phase="build", limit=MAX_ACT
                 continue
             refs += 1
         picked.append(s["name"])
+    if code_work and "code-quality-skill" in by_name and "code-quality-skill" not in picked and len(picked) < limit:
+        picked.append("code-quality-skill")               # code work: the standard comes along in a free slot; it never pushes out a more specific skill
     picked = [n for n in picked if by_name[n]["kind"] != "reference"] + [n for n in picked if by_name[n]["kind"] == "reference"]
     pinned = [n for n in sorted(ctx.pinned_skills) if n in by_name]
     return pinned + [n for n in picked if n not in pinned][:max(limit, 1)]

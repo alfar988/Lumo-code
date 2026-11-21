@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.12.4] - 2026-11-20
+
+### Fixed
+- **Installing was blocked while the user had asked for it.** The 1.11.2 guard let package managers run only when the message contained an exact install word ("installin" did not count) or an error said "is not installed" ("ffmpeg not installed yet" did not), so a video task that needed ffmpeg and Pillow was refused twelve times, the model asked the user for permission twice and finally told the user to run `pkg install` by hand. Now package managers run **while Lumo is working on a task** (a request to build, fix, run or do something) and are refused only when nothing is being worked on: a greeting or a plain question. System-wide upgrades and removals (`upgrade`, `full-upgrade`, `uninstall`, `autoremove` ...) still need the user to ask. The system prompt tells the model to install a missing tool itself right away (Termux `pkg install -y`, Pillow is `python-pillow`, Debian `apt-get install -y`, pip with `--break-system-packages` when needed) and not to ask or to send the user to the terminal.
+- **"this identical call has already failed 3 times" fired after the script had been edited.** The loop guard now counts the changes made to the workspace in the turn (an edit, an install, a successful command): the same `render_video` call after a change is a new call.
+- **Every bad sound is reported at once (lumovideo 1.3.2).** A wrong `v.sfx` name or option used to stop the script at the first one, 15 seconds per try (`hiss`, then `buzz`, then `zap(dur=...)`). Bad calls are now collected and `render()` lists all of them in one error, with the options of the function for a wrong keyword and the list of valid names once.
+
+### Changed
+- **Better code, in every mode.** A "Writing code" section in the system prompt (settle inputs, outputs and edge cases first, complete files without placeholders, look names up instead of guessing, run it, fix the root cause, fix every occurrence of the same mistake in one edit) and the `code-quality-skill` loads for code work in any mode, not only in multi-agent mode.
+
 ## [1.12.3] - 2026-11-20
 
 ### Fixed
