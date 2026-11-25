@@ -1,19 +1,20 @@
-"""Scope guard: Lumo does not open, list or search files and folders that the user did not ask about.
+"""Scope: whether to open, list or search the user's files is the MODEL's decision, not a keyword list's.
 
-A conversational request ("explain recursion", "what is the weather like for hiking", "hi") never needs the workspace. Before this guard a model
-could still start every turn by listing the folder or reading old files, because its instructions said "look before you change". Now every request is
-sorted once at the start of the turn:
+An earlier version answered every reading tool with "SKIPPED: not needed" unless the message contained a file name or a word such as "fix". That
+was a keyword guess, and it was wrong whenever the user said it another way ("benerin", "kok error?", "coba lagi"): the broken file was never
+opened. Now the system prompt tells the model when files are worth opening (the request is about existing work, a file was named, an error is
+open) and when they are not (greetings, questions, research, a brand-new build), and the tools simply work. What stays here:
 
-  * the user pointed at the workspace (a file, a folder, a path, @file, "project", "fix", "continue" ...)  -> reading tools work as usual
-  * otherwise                                                                                          -> reading tools answer "not needed" and the
-                                                                                                          model goes on with the request itself
-
-Files that Lumo created in this very turn, a file or folder the user named, and everything after the user said "continue" always stay readable.
+  * greetings and pings are answered without any tool (tools are switched off for them),
+  * the long history files (thousands of lines) can only be read in small pieces, twice per task,
+  * installing packages follows the install guard below,
+  * `note_request` still sorts the message so that the planning phase knows when to hand over the workspace overview.
 """
 
 import os
 import re
 
+from lumo import fixmode
 from lumo.config import HISTORY_DIRNAME
 
 # Reading tools that look into the user's workspace. (read_notes / recall / use_skill read Lumo's own memory and stay available.)
@@ -123,6 +124,10 @@ def explore_reason(ctx, text, intent, continuation):
     words = set(re.findall(r"[\w.\-]+", t.lower()))
     if words & _top_names(ctx):
         return "name"
+    if fixmode.is_fix_request(t):
+        return "fix"                                           # "benerin", "kok error?": repairing is work on the user's files
+    if fixmode.is_followup(ctx, t):
+        return "follow-up"                                     # "coba lagi" right after an error
     if intent == "chat":
         return "hint" if _WORKSPACE.search(t) else ""          # a question: only when it talks about the user's own files
     if _WORKSPACE.search(t) or (intent != "build" and _MODIFY.search(t)):
@@ -144,7 +149,14 @@ HISTORY_READ_LINES = 150
 
 
 def guard(ctx, name, args):
-    """None when the tool call may go ahead; otherwise the tool result that replaces it."""
+    """None when the tool call may go ahead; otherwise the tool result that replaces it.
+
+    Greetings, pings and thanks have nothing to open, so they get no tools. Whether a real request needs the user's own files is up to the model;
+    only the history files are limited."""
+    if name in EXPLORE_TOOLS and getattr(ctx, "vague", False) and not getattr(ctx, "ma_depth", 0):
+        ctx.turn["scope_blocked"] = ctx.turn.get("scope_blocked", 0) + 1
+        return ("SKIPPED: not needed. The message is a greeting, a ping or thanks, so there is nothing to open, list or search. "
+                "Answer it in one short sentence.")
     if name == "read_file" and _HISTORY_FILE.search(str(args.get("path") or "").replace("\\", "/")):
         # The transcript is thousands of lines. Reading it in chunks burns requests and context: search it, or read a small piece, twice at most.
         first, last = int(args.get("start_line") or 1), args.get("end_line")
@@ -154,17 +166,4 @@ def guard(ctx, name, args):
             return ("SKIPPED: history files are long (the transcript has thousands of lines). Search them with search_files or recall using a keyword, or read at most "
                     "%d lines at a time, twice per task. If the user asked to continue, the last conversation is already in this chat." % HISTORY_READ_LINES)
         ctx.turn["hist_reads"] = ctx.turn.get("hist_reads", 0) + 1
-        return None
-    if name not in EXPLORE_TOOLS or getattr(ctx, "ma_depth", 0):
-        return None
-    if getattr(ctx, "scope_reason", "x"):
-        return None
-    if ctx.changes:                                            # Lumo wrote files in this turn: reading them back is part of the job
-        return None
-    path = str(args.get("path") or args.get("pattern") or "")
-    text = getattr(ctx, "scope_text", "")
-    if path and path not in (".", "./") and os.path.basename(path.rstrip("/")) and os.path.basename(path.rstrip("/")).lower() in text.lower():
-        return None                                            # the user named this file or folder
-    ctx.turn["scope_blocked"] = ctx.turn.get("scope_blocked", 0) + 1
-    return ("SKIPPED: not needed. The user's message does not ask about files or folders, so do not open, list or search the workspace. "
-            "Answer or act from the request itself. If you really need a file the user named, call this tool again with that exact path.")
+    return None

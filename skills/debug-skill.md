@@ -13,6 +13,7 @@ When a command, check or test fails you own the fix. Do not ask permission to re
 4. Fix the cause, not the symptom. Never silence an error, delete a check or loosen a test to make it pass.
 5. After the fix, run the original failing command again and a nearby case.
 6. Try up to four distinct ideas. Then stop and explain the concrete blocker and what you tried.
+7. Never delete, disable or comment out the feature that errors. An error points at one wrong name, value or call: repair that. If four distinct ideas fail, keep the feature in the code, say which part fails and why, and ask whether to drop it.
 
 ## Safety in this skill
 - Do not "fix" a failure by switching off security: certificate checks, authentication, firewalls, `chmod 777`, running as root. If a local test needs a shortcut, say so and keep it out of the real setup.
@@ -26,6 +27,15 @@ When a command, check or test fails you own the fix. Do not ask permission to re
 5. **Fix the root cause**, with the smallest change that makes the behavior correct. No unrelated refactors.
 6. **Confirm.** Re-run the original failing command, then neighbours (verify_files, tests, the feature next to it).
 7. **Explain in two sentences:** cause, fix, how to avoid it.
+
+## When the user says "fix it" (benerin, perbaiki, kok error)
+The message may be a single word. The thing to repair is the last error in this chat, or the file you just changed. Do not ask which file when the error already names it, and never answer that a file is not needed: reading it is the job.
+1. Run the file or command that failed (or take the error already shown) and keep the full text.
+2. `read_file` around the line the error names; if the file is unknown, `search_files` for the symbol or the message.
+3. Name the cause in one sentence before you edit. A wrong name or option: look the real one up (the library's tool, the docs, the file that defines it).
+4. One `edit_file` that fixes the cause and every other place with the same mistake.
+5. Run it again; then run one nearby case. Report what was wrong, what changed and how you checked.
+A file that fails is repaired, never skipped, never deleted and never reported as "not used".
 
 ## Discipline
 - Keep a three-line ledger: hypothesis, test, result. Never repeat a test whose result you already have.

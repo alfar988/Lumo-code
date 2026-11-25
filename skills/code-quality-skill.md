@@ -1,6 +1,6 @@
 ---
 name: code-quality-skill
-description: Write correct, readable, safe code the first time: structure, naming, error handling, input validation, security basics, tests and a self-review checklist, with Python and JavaScript examples.
+description: Write correct, readable, safe code the first time: blueprint, structure and naming, error handling, input validation, security basics, tests, project-specific checks and the verifier messages, with Python and JavaScript examples.
 ---
 # Code quality skill
 
@@ -14,6 +14,8 @@ Most bad AI code fails in the same few ways. Avoid them on purpose.
 5. Handle the bad cases: empty input, wrong type, missing file, network failure. Say what went wrong in plain words.
 6. Put tunable numbers and texts in one place at the top.
 7. Run it. Check each requirement against evidence (a run, a test, a file), then report.
+8. Fix the cause of an error, never the feature: do not delete, disable or comment out working behaviour to make an error go away. If you cannot repair it, say so and keep it in place.
+9. Prove it with a run of the real thing (normal, empty and wrong input) before you say it is done. `verify_files` is only the first check.
 
 ## Safety in this skill
 - Do not write code meant to hide what it does from the user or from security tools (obfuscated payloads, disabling antivirus, fake error screens), or code that collects data the user was not told about.
@@ -132,6 +134,88 @@ Run with `python -m unittest -v`. For browser code, expose a small `window.app` 
 ## Performance basics
 - Measure before optimizing. The usual wins: avoid work inside loops, cache DOM lookups, batch DOM writes, debounce input handlers, reuse objects in game loops (no allocation per frame), paginate large lists.
 - Algorithms first: replacing a nested loop with a Map/dict lookup beats any micro-optimization.
+
+## Blueprint before you write (two minutes, saves requests)
+Write this in your notes or the todo list, then code from it:
+```
+Requirements (the user's words)        How I will check it
+1. <what must be true>                 <the run, the test or the file that shows it>
+2. ...
+Inputs and edge cases: normal 1, normal 2, empty, huge, wrong type, missing file or network
+Files and functions:   app.py: load(), parse(), render(), main()   (one job each)
+Failure modes:         what can go wrong at each edge, and the message the user will see
+```
+If a requirement has no check, it is not finished. If a function has two jobs, split it.
+
+## Shape the code
+- **Names say the job.** Functions are verbs (`load_scores`, `parse_line`), data are nouns (`scores`, `line`), booleans read as questions (`is_valid`, `has_ammo`). No `data2`, `tmp`, `thing`.
+- **Small functions.** About 30 lines at most, one job, three levels of nesting at most; return early on the bad case instead of wrapping everything in `if`.
+- **Data apart from logic.** A table or dict beats a long `if`/`elif` chain; constants and texts live at the top.
+- **Pure core, thin edges.** Put the calculation in functions that take values and return values; keep reading files, the network, printing and the screen in a few small functions around them. Pure functions are the ones you can test in one line.
+- **No hidden shared state.** Pass values in and return values out instead of changing globals from several places.
+- **Comments say why**, not what. Delete code you no longer use instead of commenting it out.
+```python
+# bad: logic buried in a chain, magic numbers, one big function
+def price(kind, qty):
+    if kind == "a": return qty * 10 if qty < 10 else qty * 9
+    elif kind == "b": return qty * 25 if qty < 10 else qty * 22
+    else: return 0
+
+# good: the data is a table, the rule is one small function
+PRICES = {"a": (10, 9), "b": (25, 22)}      # kind: (unit price, unit price from BULK_FROM)
+BULK_FROM = 10
+
+def price(kind, qty):
+    if kind not in PRICES:
+        raise ValueError("unknown kind: %r" % (kind,))
+    unit, bulk = PRICES[kind]
+    return qty * (bulk if qty >= BULK_FROM else unit)
+```
+
+## By kind of project
+- **Command-line tool:** `argparse` with `--help`, exit code 0 on success and non-zero on failure, errors to stderr in one plain line, no traceback for expected mistakes (a missing file, a bad option).
+- **Browser game or canvas page (one HTML file):** a game loop with `requestAnimationFrame` and a clamped delta time (`dt = Math.min(0.05, dt)`), a state machine (menu, playing, paused, game over), resize and `devicePixelRatio` handling, pause when the tab is hidden, keyboard and touch input mapped to the same actions, storage inside try/catch, no external files unless named.
+- **Web page or app:** semantic HTML, one place for state, render from state, escape or `textContent` for user text, loading and error states, works at 360px (see the design skill).
+- **Node or Python server:** validate every input at the door, return clear status codes and messages, never log secrets, set timeouts on outgoing calls, read configuration from environment variables.
+- **Bot (Telegram, Discord):** token from the environment, a global error handler that logs and keeps the bot alive, rate limits respected, no reading other people's private data.
+- **Data script:** read the input once, handle encoding and empty rows, write the result to a new file instead of overwriting the source, print a short summary (rows read, rows kept, where it was saved).
+- **Termux:** use `pkg install` for system packages, paths under `$HOME` or `~/storage` after `termux-setup-storage`, no root, no `sudo`.
+
+## Prove it works
+Run the real thing, then break it on purpose. For logic, a table of cases is the fastest check:
+```python
+# check: runs
+def slugify(text):
+    out, dash = [], False
+    for ch in text.strip().lower():
+        if ch.isalnum():
+            out.append(ch)
+            dash = False
+        elif not dash and out:
+            out.append("-")
+            dash = True
+    return "".join(out).strip("-")
+
+CASES = [("Hello World", "hello-world"), ("  Spaces  ", "spaces"), ("", ""), ("A/B  c", "a-b-c"), ("---", "")]
+for given, expected in CASES:
+    got = slugify(given)
+    assert got == expected, (given, got, expected)
+print("all %d cases pass" % len(CASES))
+```
+Include at least: a normal case, an empty case, the largest or smallest case, and the failure the user is most likely to hit. When a check fails, fix the code, not the case (unless the case itself was wrong, and then say so).
+
+## Read the verifier
+`verify_files` and the automatic check after your edits report these. Fix them, do not argue with them:
+| Message | What to do |
+|---|---|
+| undefined name or function | define it, import it or correct the spelling; look the real name up instead of guessing |
+| the code looks cut off or left for later | write the real code there; a comment such as "rest of the code" is never a result |
+| placeholder or leftover found | replace the TODO, lorem ipsum or sample text with the real thing |
+| bare `except:` or `except Exception: pass` | catch the specific exception and handle it, log it or let it go up |
+| mutable default argument | default to `None` and create the list or dict inside the function |
+| function has no implementation | write it, or delete it if nothing calls it |
+| unused import | remove it |
+| a secret looks hard-coded | read it from an environment variable or a settings file kept out of the project |
 
 ## Self-review checklist (do this before saying "done")
 - [ ] verify_files is clean (syntax, undefined names, HTML structure).

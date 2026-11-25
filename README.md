@@ -2,15 +2,15 @@
 
 # Lumo Code
 
-Lumo Code is an AI agent for the terminal. Ask a question, have something researched or calculated, work with your files, or build and fix software: you say what you want in plain language and it does that, checks its own result and fixes what fails. It stays modest and on topic, and it does not open your files or folders unless your request is about them. It talks to [OpenRouter](https://openrouter.ai), so it works with the free models there, and it needs nothing beyond the Python standard library.
+Lumo Code is an AI agent for the terminal. Ask a question, have something researched or calculated, work with your files, or build and fix software: you say what you want in plain language and it does that, checks its own result and fixes what fails. It stays modest and on topic: it decides for itself whether a request needs your files, and leaves them alone for greetings, questions and research. It talks to [OpenRouter](https://openrouter.ai), so it works with the free models there, and it needs nothing beyond the Python standard library.
 
 It was built to run well in Termux on a phone (narrow output, no heavy dependencies), and it runs the same on any Linux machine or macOS.
 
 ## What it does
 
 - **Builds things end to end:** games (2D canvas and 3D Three.js), websites, web apps, APIs, bots, scripts.
-- **Starts from tested templates** instead of improvising an engine: thirty-one starters (2D, 3D, puzzle, snake, breakout, runner, flappy, pong, space shooter, asteroids, falling blocks, memory, racing, platformer and tower-defense games; stickman fight, 3D fight, soldiers-vs-zombies, story, 3D scene, explainer and kinetic-text videos; landing page, app shell, dashboard, documentation site, Python and Node JSON APIs, command-line tool, Telegram bot, scraper). The code starters carry a self test.
-- **Makes any video with Python, 2D or 3D:** a stickman fight, soldiers against zombies, a story, an explainer, a promo, a tutorial, kinetic text, a chart, a slideshow, a 3D scene. The agent picks `video-skill`, writes an animation script with the bundled `lumovideo` library (templates are only starting points) and turns it into a playable MP4 with sound in your workspace. It can invent its own poses, moves and attacks, and it looks names up with the `video_api` tool instead of guessing them. It makes no video unless you ask for one.
+- **Starts from tested templates** instead of improvising an engine: thirty-seven starters (2D, 3D, puzzle, snake, breakout, runner, flappy, pong, space shooter, asteroids, falling blocks, memory, racing, platformer and tower-defense games; explainer, promo, tutorial, data-chart, kinetic-text, slideshow, science, countdown, story, 3D scene, soldiers-vs-zombies, stickman fight and 3D fight videos; landing page, app shell, dashboard, documentation site, Python and Node JSON APIs, command-line tool, Telegram bot, scraper). The code starters carry a self test.
+- **Makes any video with Python, 2D or 3D:** an explainer, a promo, a tutorial, a data chart, a slideshow, kinetic text, a countdown, a science animation, a story, a 3D scene, soldiers against zombies, a stickman fight. The agent picks `video-skill`, writes an animation script with the bundled `lumovideo` library (templates are only starting points) and turns it into a playable MP4 with sound in your workspace. It can invent its own poses, moves and attacks, and it looks names up with the `video_api` tool instead of guessing them. It makes no video unless you ask for one.
 - **Researches the web:** searches through several providers with automatic fallback (web, news, code, Q&A, docs, packages, papers), reads pages in parallel, cites sources and looks up exact package versions. There is no cap on the number of searches.
 - **Learns from its work:** after it fixes a non-obvious error it can save a lesson, applies relevant lessons in later sessions, and can write a new skill for a procedure it expects to repeat (it asks first). You can review and delete everything with `/lessons`.
 - **Checks its own work:** syntax, undefined functions and variables, broken HTML, and a static UI review (responsive layout, accessibility, WCAG color contrast, generic "AI look") before it says it is done.
@@ -18,6 +18,7 @@ It was built to run well in Termux on a phone (narrow output, no heavy dependenc
 - **Uses skills:** 33 guides with working code examples, good and bad examples and troubleshooting steps, chosen for each request.
 - **Copes with unreliable free models:** automatic fallback to other models, rate-limit cooldowns, repair of broken tool-call JSON, recovery from cut-off output.
 - **Stays inside your workspace** unless you approve otherwise, and deletes to a recoverable trash.
+- **Repairs instead of deleting.** When something errors, Lumo fixes the wrong name or call and runs it again; it does not remove the feature that raised the error. A write that drops functions is called out so they can be put back. Messages such as "benerin" or "kok error?" start a short repair routine (reproduce, read the file the error names, fix the cause, run again), and the model itself decides whether a request needs your files.
 
 ## Requirements
 
@@ -74,7 +75,7 @@ Lumo works inside one folder, the workspace. The default is `~/workspace`. Pass 
 python run.py ~/projects/my-game
 ```
 
-If you start it from another directory, that directory becomes the workspace. Your home folder and the Lumo folder itself fall back to `~/workspace`, so the agent never edits its own source. For web projects `/serve` starts a local preview server.
+If you start it from another directory, that directory becomes the workspace. Inside Lumo, `/cd <folder>` changes it (`/cd -` goes back, `/cd` shows it) and the choice is remembered: a start from your home folder or the Lumo folder opens the workspace you used last, or `~/workspace` when none was saved, so the agent never edits its own source. For web projects `/serve` starts a local preview server.
 
 ## Command line options
 
@@ -107,6 +108,7 @@ The key can also come from the `OPENROUTER_API_KEY` environment variable. `LUMO_
 | `/dig <question>` | research a question across several sources and answer with citations |
 | `/lessons` | show, add or delete what Lumo learned; `/lessons off` stops learning |
 | `/templates` | list the ready-made starters |
+| `/cd [folder\|-]` | change the workspace; remembered for the next start (`-` goes back) |
 | `/resume` | continue unfinished work (progress is saved after every step) |
 | `/remember [on\|off]` | keep the conversation after a restart (on by default; `/clear` starts a new topic) |
 | `/play [video] [--gallery]` | watch the newest video, or copy it to your phone's Movies folder |
@@ -172,7 +174,7 @@ In `templates/`, each with a manifest entry (variables such as title and accent 
 | `game-snake`, `game-breakout`, `game-runner`, `game-flappy` | engine-kit games: particles, screen shake, synthesised sound, power-ups, level patterns, duck and jump, tilting flyer |
 | `game-pong`, `game-shooter`, `game-asteroids`, `game-tetris` | AI opponent with rounds, waves and bosses with a touch stick, drift physics with splitting rocks, 7-piece bag with ghost piece and wall kicks |
 | `game-memory`, `game-racing`, `game-platformer`, `game-tower-defense` | card matching with timer, traffic racer with nitro, generated platformer levels with coyote time, towers with upgrades and 15 waves |
-| `video-stickman-fight`, `video-3d-fight`, `video-soldier-zombies`, `video-story`, `video-3d-scene`, `video-explainer`, `video-kinetic-text` | Python video scripts (lumovideo): 2D or 3D fight, soldiers against zombie waves with rifles and grenades, a dialogue story, a generic 3D world, scenes with chart and typewriter text, one punchy line per scene; selftest without ffmpeg |
+| `video-explainer`, `video-promo`, `video-tutorial`, `video-data-chart`, `video-kinetic-text`, `video-slideshow`, `video-science`, `video-countdown`, `video-story`, `video-3d-scene`, `video-soldier-zombies`, `video-stickman-fight`, `video-3d-fight` | Python video scripts (lumovideo): explainer with chart and typewriter text, promo with feature scenes, tutorial with a typed command, animated data story, one punchy line per scene, photo slideshow with zoom and captions, science animation (sorting, orbits, waves), countdown with fireworks, a dialogue story, a generic 3D world, soldiers against zombie waves, 2D or 3D fight; selftest without ffmpeg |
 | `web-landing`, `web-app` | one-page site, app shell with storage |
 | `dashboard` | KPI cards, SVG charts, sortable table, CSV export |
 | `docs-site` | markdown pages, search, table of contents |

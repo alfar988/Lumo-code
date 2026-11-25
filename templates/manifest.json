@@ -547,6 +547,104 @@
     "Write the dialogue from the user's request, in their language, one short line per caption.",
     "Use gestures from moves(); define your own with define_move when the story needs one."
    ]
+  },
+  "video-promo": {
+   "file": "video-promo.py",
+   "default_path": "videos/promo.py",
+   "desc": "promo or ad video in Python (lumovideo): hook, brand reveal, feature scenes with drawn icons, offer and call to action, whoosh and pop sounds, 16:9 or vertical",
+   "vars": {
+    "TITLE": "Nova",
+    "TAGLINE": "Something new is here"
+   },
+   "guide": "Keep the imports, make_video(), selftest() and main(). Replace BRAND, TAGLINE, HOOK, FEATURES, OFFER and CTA with the user's real product facts (never invent claims or prices), then call render_video.",
+   "min_novelty": 0.0,
+   "customize": [
+    "Write the hook as the viewer's problem, not a slogan",
+    "One feature per scene; icons: bolt, shield, star, heart",
+    "Use only the offer the user gave",
+    "VERTICAL = True for Reels, Shorts and stories"
+   ]
+  },
+  "video-data-chart": {
+   "file": "video-data-chart.py",
+   "default_path": "videos/datachart.py",
+   "desc": "data story video in Python (lumovideo): title, animated bar chart, growing line chart, one key number counting up; for the user's real numbers",
+   "vars": {
+    "TITLE": "Monthly growth",
+    "SUBTITLE": "What the numbers say"
+   },
+   "guide": "Keep the imports, make_video(), selftest() and main(). Replace SERIES, UNIT, KEY_VALUE and KEY_LABEL with the user's real numbers. If there are none, say the numbers are an example. Then call render_video.",
+   "min_novelty": 0.0,
+   "customize": [
+    "Use the user's real numbers, at least three data points",
+    "Say the finding in the subtitle",
+    "Bars start at zero; label units",
+    "End on the one number that matters"
+   ]
+  },
+  "video-tutorial": {
+   "file": "video-tutorial.py",
+   "default_path": "videos/tutorial.py",
+   "desc": "how-to tutorial video in Python (lumovideo): one scene per step with a typed command in a terminal window, progress bar, key click sounds and a recap",
+   "vars": {
+    "TITLE": "Get started",
+    "SUBTITLE": "Three steps"
+   },
+   "guide": "Keep the imports, make_video(), selftest() and main(). Replace STEPS with the real, tested steps (heading, one line, the command typed). Then call render_video.",
+   "min_novelty": 0.0,
+   "customize": [
+    "One action per step",
+    "Type the exact command the user will run",
+    "3 to 6 steps; the recap repeats the headings"
+   ]
+  },
+  "video-slideshow": {
+   "file": "video-slideshow.py",
+   "default_path": "videos/slideshow.py",
+   "desc": "photo slideshow video in Python (lumovideo): slow zoom and pan on each picture, captions, cross-fades, optional soft music; draws colour cards when no photos are given",
+   "vars": {
+    "TITLE": "Our trip",
+    "SUBTITLE": "A few good days"
+   },
+   "guide": "Keep the imports, make_video(), selftest() and main(). Put the user's picture paths in PHOTOS and one caption each in CAPTIONS. Set MUSIC = True only when music was asked for. Then call render_video.",
+   "min_novelty": 0.0,
+   "customize": [
+    "Use the user's own pictures; never download photos of people",
+    "One short caption per picture",
+    "SECONDS controls the pace"
+   ]
+  },
+  "video-science": {
+   "file": "video-science.py",
+   "default_path": "videos/science.py",
+   "desc": "science and algorithm explainer in Python (lumovideo): bubble sort with bars, planets in orbit, two waves adding up; keep only the scenes the topic needs",
+   "vars": {
+    "TITLE": "How it works",
+    "SUBTITLE": "See it move"
+   },
+   "guide": "Keep the imports, make_video(), selftest() and main(). Each scene is a function of time: keep, change or replace the scenes so they show the user's topic (the sort, the orbit and the waves are examples). Then call render_video.",
+   "min_novelty": 0.0,
+   "customize": [
+    "Show the user's topic as a process, not just a result",
+    "Label what moves",
+    "One idea per scene"
+   ]
+  },
+  "video-countdown": {
+   "file": "video-countdown.py",
+   "default_path": "videos/countdown.py",
+   "desc": "countdown video in Python (lumovideo): numbers in a ring with a tick each second, then fireworks and a big message for a new year, launch or birthday",
+   "vars": {
+    "TITLE": "Happy New Year",
+    "SUBTITLE": "See you in the next one"
+   },
+   "guide": "Keep the imports, make_video(), selftest() and main(). Set START, TITLE and SUBTITLE for the event. Then call render_video.",
+   "min_novelty": 0.0,
+   "customize": [
+    "Set START, TITLE and SUBTITLE from what the user described",
+    "BURSTS = number of fireworks",
+    "Keep the message short"
+   ]
   }
  }
 }

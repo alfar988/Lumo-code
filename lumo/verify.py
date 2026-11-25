@@ -26,6 +26,20 @@ PLACEHOLDER_RE = re.compile(
     r"(\bTODO\b|\bFIXME\b|lorem ipsum|\.\.\.\s*(sisa|rest|kode|code|lainnya)\b|rest of (the )?(code|file)|"
     r"your code here|isi (sendiri|dengan))", re.I)
 
+# Signs that code was cut off or left for later. The marker must sit in a comment, so a JavaScript spread such as "...rest" never matches.
+TRUNCATION_RE = re.compile(
+    r"(?:#|//|/\*|<!--)[ \t]*\.{3}[ \t]*(?:\*/|-->)?[ \t]*$"
+    r"|(?:#|//|/\*|<!--)[^\n]{0,40}\.{3}[ \t]*(?:existing|rest of|remaining|previous|unchanged|same as)\b"
+    r"|(?:rest|remainder) of (?:the |your )?(?:code|file|function|script|class)\b[^\n]{0,20}\b(?:here|remains?|unchanged|same|as before|goes)\b"
+    r"|your (?:code|implementation) (?:goes )?here"
+    r"|(?:implement|add|write|fill in) (?:this|it|me) (?:here|later)\b", re.I | re.M)
+
+_SECRET_RE = re.compile(
+    r"""\b(?:api[_-]?key|secret(?:[_-]?key)?|access[_-]?token|auth[_-]?token|token|passw(?:or)?d)\b["']?\s*[:=]\s*["']([A-Za-z0-9_\-./+=]{16,})["']""", re.I)
+_FAKE_SECRET_RE = re.compile(r"your|example|xxxx|placeholder|change|replace|enter|insert|here|dummy|sample|test", re.I)
+_JS_EMPTY_CATCH = re.compile(r"catch\s*(?:\([^)]*\))?\s*\{\s*\}")
+_JS_EVAL = re.compile(r"(?<![\w$.])(?:eval\s*\(|new\s+Function\s*\()")
+
 
 def js_balance(code):
     """Check that brackets and quotes balance without node. Returns (line, message) or None."""
@@ -272,6 +286,7 @@ def verify_paths(ctx, paths):
             else:
                 for ln, nm in py_undefined_names(text)[:5]:
                     issues.append(("error", "%s:%d: undefined name '%s'" % (name, ln, nm)))
+                issues += py_quality_issues(text, name)
         elif ext == ".json":
             try:
                 json.loads(text)
@@ -280,9 +295,11 @@ def verify_paths(ctx, paths):
         elif ext in (".js", ".mjs"):
             issues += check_js_code(text, name, 1, module=(ext == ".mjs"))
             issues += js_undefined_issues(text, name)
+            issues += js_quality_issues(text, name)
         elif ext in (".html", ".htm"):
             issues += check_html(p, text, name)
             issues += html_undefined_issues(p, text, name)
+            issues += js_quality_issues(text, name)
         elif ext == ".css":
             if text.count("{") != text.count("}"):
                 issues.append(("error", "%s: unbalanced CSS braces (%d open, %d close)" % (name, text.count("{"), text.count("}"))))
@@ -290,6 +307,12 @@ def verify_paths(ctx, paths):
             r = subprocess.run(["bash", "-n", str(p)], capture_output=True, text=True, timeout=15)
             if r.returncode != 0:
                 issues.append(("error", "%s: %s" % (name, (r.stderr or "shell syntax error").strip().splitlines()[0])))
+        if ext in CODE_EXTS:
+            cut = TRUNCATION_RE.search(text)
+            if cut:
+                issues.append(("error", "%s:%d: the code looks cut off or left for later ('%s'). Write the real code there" %
+                               (name, text.count("\n", 0, cut.start()) + 1, cut.group(0).strip()[:24])))
+            issues += secret_issues(text, name)
         if ext in CODE_EXTS and PLACEHOLDER_RE.search(text):
             m = PLACEHOLDER_RE.search(text)
             ln = text.count("\n", 0, m.start()) + 1
@@ -313,6 +336,92 @@ def file_sig(p):
         return (st.st_size, st.st_mtime_ns)
     except OSError:
         return None
+
+
+def _is_doc(node):
+    return isinstance(node, ast.Expr) and isinstance(getattr(node, "value", None), ast.Constant) and isinstance(node.value.value, str)
+
+
+def py_quality_issues(text, name):
+    """Warnings about habits that hide bugs, one line per kind: bare except, swallowed errors, shared default values, empty functions, unused imports."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    bare, swallowed, stubs, mutable, protocol_methods = [], [], [], [], set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ClassDef):
+            bases = [getattr(b, "id", getattr(b, "attr", "")) for b in n.bases] + [getattr(k.value, "id", getattr(k.value, "attr", "")) for k in n.keywords]
+            if any(b in ("Protocol", "ABC", "ABCMeta") for b in bases):
+                protocol_methods.update(id(ch) for ch in n.body)
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ExceptHandler):
+            body = [b for b in n.body if not _is_doc(b)]
+            if n.type is None:
+                bare.append(n.lineno)
+            elif len(body) == 1 and isinstance(body[0], ast.Pass) and isinstance(n.type, ast.Name) and n.type.id in ("Exception", "BaseException"):
+                swallowed.append(n.lineno)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            a = n.args
+            for d in list(a.defaults) + [k for k in a.kw_defaults if k is not None]:
+                if isinstance(d, (ast.List, ast.Dict, ast.Set)) or (isinstance(d, ast.Call) and isinstance(d.func, ast.Name) and d.func.id in ("list", "dict", "set")):
+                    mutable.append((n.lineno, n.name))
+                    break
+            body = [b for b in n.body if not _is_doc(b)]
+            empty = bool(body) and all(isinstance(b, ast.Pass) or (isinstance(b, ast.Expr) and getattr(getattr(b, "value", None), "value", 0) is Ellipsis) for b in body)
+            marked = any("abstract" in ast.dump(d) or "overload" in ast.dump(d) for d in n.decorator_list)
+            dunder = n.name.startswith("__") and n.name.endswith("__")
+            if empty and not marked and not dunder and id(n) not in protocol_methods:
+                stubs.append((n.lineno, n.name))
+    unused = []
+    if not name.endswith("__init__.py"):
+        imported = {}
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Import):
+                for al in n.names:
+                    imported[(al.asname or al.name).split(".")[0]] = n.lineno
+            elif isinstance(n, ast.ImportFrom) and n.module != "__future__":
+                for al in n.names:
+                    if al.name != "*":
+                        imported[al.asname or al.name] = n.lineno
+        lines = text.splitlines()
+        for nm, ln in imported.items():
+            if len(re.findall(r"\b%s\b" % re.escape(nm), text)) <= 1 and "noqa" not in lines[ln - 1]:
+                unused.append(nm)
+    res = []
+    more = lambda items: (" (%d places)" % len(items)) if len(items) > 1 else ""      # noqa: E731
+    if bare:
+        res.append(("warn", "%s:%d: a bare 'except:' hides every error, even Ctrl+C. Catch the specific exception%s" % (name, bare[0], more(bare))))
+    if swallowed:
+        res.append(("warn", "%s:%d: 'except Exception: pass' swallows the error. Handle it, log it or let it go up%s" % (name, swallowed[0], more(swallowed))))
+    if mutable:
+        res.append(("warn", "%s:%d: '%s' has a mutable default argument (shared between calls). Default to None and create it inside" % (name, mutable[0][0], mutable[0][1])))
+    if stubs:
+        res.append(("warn", "%s:%d: '%s' has no implementation (only pass or ...). Write it%s" % (name, stubs[0][0], stubs[0][1], more(stubs))))
+    if unused:
+        res.append(("warn", "%s: unused import%s: %s" % (name, "s" if len(unused) > 1 else "", ", ".join(sorted(unused)[:6]))))
+    return res
+
+
+def js_quality_issues(text, name):
+    res = []
+    m = _JS_EMPTY_CATCH.search(text)
+    if m:
+        res.append(("warn", "%s:%d: an empty catch block hides the error. Report it, show a message or rethrow" % (name, text.count("\n", 0, m.start()) + 1)))
+    m = _JS_EVAL.search(text)
+    if m:
+        res.append(("warn", "%s:%d: eval() / new Function() run text as code. Use data (JSON, a lookup table) instead" % (name, text.count("\n", 0, m.start()) + 1)))
+    return res
+
+
+def secret_issues(text, name):
+    for m in _SECRET_RE.finditer(text):
+        v = m.group(1)
+        if _FAKE_SECRET_RE.search(v) or re.fullmatch(r"[a-z]+(?:[-_][a-z0-9]+){2,}", v):
+            continue
+        return [("warn", "%s:%d: a secret looks hard-coded. Read it from an environment variable or a settings file kept out of the project" % (name, text.count("\n", 0, m.start()) + 1))]
+    return []
+
 
 
 def format_issues(issues, n):

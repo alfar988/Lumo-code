@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from lumo import safelimit
+from lumo import safelimit, workspace
 from lumo.compact import compact_archive
 from lumo import search as engine
 from lumo.client import _REAL_GAI, NETSTATE
@@ -22,7 +22,7 @@ from lumo.config import DEFAULT_MODEL, ROUTER_MODEL, SESSIONS_DIR, SKILLS_DIR, V
 from lumo.limits import cmd_checklimit
 from lumo.provider_ui import cmd_key, cmd_provider
 from lumo.knowledge import add_lesson, all_lessons, forget
-from lumo.memory import hist_dir, load_history, peek_history, read_notes_text, show_plan
+from lumo.memory import hist_dir, load_history, peek_history, read_notes_text, save_history, show_plan
 from lumo.models import (
     auto_rotation, candidate_models, choose_model, compact_history, hist_chars, model_ctx_len, models_cmd,
     rotation_enabled,
@@ -144,7 +144,8 @@ HELP = """
   /auto · /access · /undo · /trash · /ps
   /serve [file] · /open <file> · /verify
   /play [video] [--gallery]     watch the newest video (or copy it to your Movies folder)
-  /overview · /ls · /cd
+  /overview · /ls
+  /cd [folder|-]                change the workspace (opens here next start too)
 
 %s
   /skills · /skill show|use|unpin|why|install|remove
@@ -681,13 +682,22 @@ def handle_command(ctx, line):
     elif cmd == "/clear":
         ctx.messages, ctx.todos, ctx.plan, ctx.hist_count = [], [], None, 0
         ctx.plan_active, ctx.task, ctx.active_skills = False, "", []
+        ctx.carry_fail = {}
         out("  " + ok("✓ new conversation"))
     elif cmd == "/cd":
         if not rest:
             out("  " + dim("workspace: ") + str(ctx.ws))
             return None
-        p = Path(os.path.expanduser(rest))
-        p = p if p.is_absolute() else ctx.ws / p
+        target = rest.strip().strip("\"'")
+        if target == "-":
+            prev = getattr(ctx, "prev_ws", None)
+            if not prev:
+                out("  " + dim("no earlier workspace in this session"))
+                return None
+            p = Path(prev)
+        else:
+            p = Path(os.path.expanduser(target))
+            p = p if p.is_absolute() else ctx.ws / p
         if not p.exists():
             try:
                 yn = input(rl("  " + warn("the folder does not exist. Create it? ") + dim("[y/N] › "))).strip().lower()
@@ -700,10 +710,20 @@ def handle_command(ctx, line):
         if not p.is_dir():
             out("  " + err("not a folder"))
             return None
-        ctx.ws = Path(os.path.realpath(str(p)))
+        new = Path(os.path.realpath(str(p)))
+        if new != ctx.ws:
+            if ctx.messages:
+                save_history(ctx, "workspace change")        # the folder you leave keeps its own memory
+            ctx.prev_ws = ctx.ws
+        ctx.ws = new
         ctx.undo.clear()
         ctx.grants.clear()
-        out("  " + ok("✓ workspace: ") + short_path(ctx.ws))
+        workspace.remember(ctx.cfg, new)
+        try:
+            save_config(ctx.cfg)                              # the next start opens this folder, not ~/workspace
+        except OSError as e:
+            out("  " + warn("could not save the workspace: %s" % e))
+        out("  " + ok("✓ workspace: ") + short_path(ctx.ws) + dim("  (opens here next time too)"))
     elif cmd == "/ls":
         try:
             out(t_list_dir({"path": rest or ".", "depth": 1}, ctx))

@@ -5,6 +5,7 @@ import platform
 import re
 from datetime import datetime
 
+from lumo import fixmode
 from lumo import multiagent, safelimit
 from lumo.config import APP_DIR, BUNDLED_SKILLS_DIR, PROMPTS_DIR, TEMPLATES_DIR
 from lumo.knowledge import lessons_block
@@ -161,6 +162,10 @@ def build_system(ctx, phase="build"):
         parts.append("## Current request (your only task)\n" + (task if len(task) <= 900 else task[:900] + "…") + "\n"
                      "Work on this and nothing else. Other files and projects in the workspace belong to earlier work: leave them alone. "
                      "Automatic [system] messages (verification, UI review, reminders) concern only the files you change for this request.")
+    if phase == "build":
+        fix = fixmode.block(ctx, getattr(ctx, "scope_text", "") or "")
+        if fix:
+            parts.append(fix)                                 # a request to repair something: reproduce, read the file, fix the cause, run again
     if phase == "chat" and getattr(ctx, "vague", False):
         parts.append("## This message\nIt is only a greeting, a ping or an interjection. Answer in one short, plain sentence in the user's language and ask what they need. "
                      "Do not continue earlier work, do not bring up earlier tasks or files, and do not call tools.")

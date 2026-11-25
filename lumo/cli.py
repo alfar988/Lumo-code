@@ -18,7 +18,7 @@ from lumo.client import NETSTATE
 from lumo.commands import cmd_resume, handle_command, SLASH
 from lumo.config import APP_DIR, DEFAULT_MODEL, HISTORY_FILE, HOME_DIR, ROUTER_MODEL, SKILLS_DIR, VERSION
 from lumo.memory import auto_restore, history_age_hours, log_event, peek_history, repair_history, save_history
-from lumo import multiagent, providers, safelimit
+from lumo import multiagent, providers, safelimit, workspace
 from lumo.models import auto_pick_model, models_cmd, rotation_enabled, start_refresher
 from lumo.provider_ui import choose_provider
 from lumo.sessions import load_session, save_session
@@ -204,7 +204,7 @@ def migrate_old_home():
 def main():
     global CTX
     ap = argparse.ArgumentParser(prog="lumo", description="Lumo Code - AI agent for the terminal (OpenRouter and other providers)")
-    ap.add_argument("workspace", nargs="?", help="workspace folder (default: current directory, or ~/workspace when run from HOME)")
+    ap.add_argument("workspace", nargs="?", help="workspace folder (default: the current directory; started from HOME or the Lumo folder: the workspace you used last, else ~/workspace)")
     ap.add_argument("-m", "--model", help="model id for the active provider")
     ap.add_argument("--provider", help="AI provider: openrouter, anthropic, xai (Grok), openai, gemini, groq, mistral, deepseek, together, ...")
     ap.add_argument("-p", "--prompt", help="one-shot mode: send a single request, then exit")
@@ -234,17 +234,15 @@ def main():
         cfg["model"] = args.model
         cfg["model_chosen"] = True
 
-    if args.workspace:
-        ws = Path(args.workspace).expanduser()
-    else:
-        cwd = Path.cwd().resolve()
-        ws = (Path.home() / "workspace") if cwd in (Path.home().resolve(), APP_DIR.resolve()) else cwd
+    ws, ws_note = workspace.resolve(args.workspace, cfg)
     ws.mkdir(parents=True, exist_ok=True)
 
     if args.multiagent:
         cfg["multiagent"] = True
     ctx = Ctx(cfg, ws)
     CTX = ctx
+    if workspace.remember(cfg, ctx.ws):
+        workspace.persist(ctx.ws)            # a later start without a folder opens this workspace again
     ctx.auto = args.auto
     start_wakelock(ctx)
 
@@ -260,6 +258,8 @@ def main():
             pass
 
     out()
+    if ws_note:
+        out("  " + warn(ws_note))
     first_run = not cfg.get("provider") and not providers.providers_with_keys(cfg)
     if (args.setup or first_run) and sys.stdin.isatty() and not args.prompt:
         if not choose_provider(ctx, first_run):

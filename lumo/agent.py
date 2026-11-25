@@ -41,6 +41,7 @@ from lumo.ui import (
     acc, C_ACC, C_DIM, C_ERR, C_OK, C_VIO, C_WARN, clip, dim, err, faint, MdStream, ok, out, paint,
     rl, rule, short_path, Spinner, tw, warn,
 )
+from lumo import fixmode
 from lumo.util import cap, human_size, rel
 from lumo.verify import changed_files, CODE_EXTS, file_sig, ui_polish_findings, verify_paths
 
@@ -82,6 +83,8 @@ def decide_intent(ctx, text):
     build = bool(re.search(BUILD_VERBS, t)) and bool(re.search(BUILD_NOUNS, t))
     if build:
         return "build", plan_wanted
+    if fixmode.is_fix_request(t):
+        return "task", False                                   # "benerin", "kok error?": work on what is already there, not a question
     if mode != "code" and (t.endswith("?") or re.match(Q_WORDS, t)) and not re.search(ACTION_VERBS, t):
         return "chat", False
     return "task", False
@@ -535,7 +538,7 @@ def run_agent(ctx, phase, allowed, max_steps, stop_tool=None):
                         out("  " + dim("↻ fixing the verification results…"))
                         ctx.messages.append({"role": "user", "content": "[system] Automatic verification found problems in the files you changed in this request:\n" +
                                              "\n".join("- " + e for e in errs[:12]) +
-                                             "\nFix them now with tools, then run verify_files until it passes. Do not touch other files."})
+                                             "\nFix them now with tools, then run verify_files until it passes. Fix the cause in the code: do not delete the feature that reports it. Do not touch other files."})
                         continue
                 if polish < 1 and ctx.intent == "build" and ctx.turn["tools"] > 0 and not safelimit.active():
                     polish += 1
@@ -671,6 +674,9 @@ def plan_phase(ctx, user_text):
 
 
 def run_turn(ctx, user_text):
+    carry = dict(getattr(ctx, "carry_fail", None) or {})
+    carry.update((getattr(ctx, "turn", None) or {}).get("pending_fail") or {})
+    ctx.carry_fail = carry                                    # an error that is still open when the next message arrives ("benerin") stays known
     ctx.turn = {"t0": time.time(), "tools": 0, "reqs": 0, "rot": 0}
     refusal = guard.check_request(user_text)
     if refusal:                                              # blatant malware, fraud or weapon request: no model request is spent
@@ -782,6 +788,8 @@ def note_recovery(ctx, name, res, failed):
             pend[name] = line
     elif name in pend:
         ctx.turn.setdefault("recovered", []).append("%s: %s" % (name, pend.pop(name)))
+    if not failed and getattr(ctx, "carry_fail", None):
+        ctx.carry_fail.pop(name, None)
 
 
 def loop_key(name, args, seq=0):
@@ -805,7 +813,8 @@ def loop_check(ctx, key):
     n = ctx.turn.setdefault("fails", {}).get(key, 0)
     if n >= 3:
         return ("ERROR: this identical call has already failed %d times. Do not repeat it. Read the earlier error, inspect the real "
-                "state (read_file / list_dir), then change your approach or ask the user with ask_user." % n)
+                "state (read_file / list_dir), look up the right name or call, then change your approach. Do not delete the feature that fails: "
+                "if it cannot be repaired, say so and ask the user with ask_user." % n)
     return None
 
 

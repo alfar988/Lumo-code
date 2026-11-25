@@ -231,12 +231,18 @@ class ScopeGuard(unittest.TestCase):
         scope.note_request(ctx, text, intent, cont)
         return ctx
 
-    def test_conversation_does_not_open_the_workspace(self):
-        for text, intent in (("hi", "chat"), ("explain how recursion works", "chat"), ("buatkan game snake", "build"), ("berapa 17 kali 23?", "chat"), ("terima kasih", "chat")):
-            ctx = self.ctx(text, intent)
+    def test_a_greeting_or_thanks_gets_no_tools(self):
+        for text in ("hi", "terima kasih"):
+            ctx = self.ctx(text, "chat")
             for tool in ("list_dir", "project_overview", "read_file", "find_files", "search_files"):
                 res = scope.guard(ctx, tool, {"path": "."})
                 self.assertTrue(res and res.startswith("SKIPPED"), (text, tool))
+
+    def test_the_model_decides_about_a_real_request(self):
+        for text, intent in (("explain how recursion works", "chat"), ("buatkan game snake", "build"), ("berapa 17 kali 23?", "chat"), ("benerin", "task")):
+            ctx = self.ctx(text, intent)
+            for tool in ("list_dir", "project_overview", "read_file", "find_files", "search_files"):
+                self.assertIsNone(scope.guard(ctx, tool, {"path": "."}), (text, tool))
 
     def test_requests_about_the_workspace_may_read_it(self):
         for text, intent in (("fix the error in game.py", "task"), ("lihat isi folder ini", "task"), ("ubah warna tombol", "task"), ("what does this project do? read the code", "chat"),
@@ -278,7 +284,7 @@ class Persona(unittest.TestCase):
         text = build_system(make_ctx(), "build")
         self.assertIn("You are Lumo Code (Lumo for short), an AI agent", text)
         self.assertIn("modest", text)
-        self.assertIn("Stay out of the user's files", text)
+        self.assertIn("Decide yourself whether the request needs the user's files", text)
         self.assertNotIn("you finish tasks end to end with tools: build games", text.lower())
 
 
@@ -563,10 +569,15 @@ class EndToEnd(unittest.TestCase):
         self.assertTrue(tool_msgs and tool_msgs[0].startswith("SKIPPED: nothing is being built or run"), tool_msgs)
 
     def test_small_talk_never_opens_the_folder(self):
+        out, log = self.run_lumo("scope", "terima kasih")
+        tool_msgs = [r["last"] for r in log if r["last"]]
+        self.assertTrue(tool_msgs and tool_msgs[0].startswith("ERROR: tool 'list_dir' is not available"), tool_msgs)     # a greeting is answered without any tool
+        self.assertNotIn("notes.txt", " ".join(tool_msgs))
+
+    def test_for_a_real_request_the_model_may_open_the_folder(self):
         out, log = self.run_lumo("scope", "jelaskan apa itu rekursi")
         tool_msgs = [r["last"] for r in log if r["last"]]
-        self.assertTrue(tool_msgs and tool_msgs[0].startswith("SKIPPED: not needed"), tool_msgs)
-        self.assertNotIn("notes.txt", " ".join(tool_msgs))
+        self.assertTrue(tool_msgs and "notes.txt" in tool_msgs[0], tool_msgs)          # the model asked for the listing and got it
 
 
 class StayOnTopic(unittest.TestCase):

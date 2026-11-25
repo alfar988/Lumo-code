@@ -9,6 +9,7 @@ import shutil
 import time
 from pathlib import Path
 
+from lumo import keepguard
 from lumo.config import IGNORE_DIRS, TRASH_DIR
 from lumo.security import fs_path, inside
 from lumo.state import ask, ToolError, track
@@ -168,8 +169,11 @@ def t_write_file(a, ctx):
     path.write_text(new_text, encoding="utf-8")
     ctx.undo.append({"t": "write", "path": path, "old": old})
     track(ctx, "+" if old is None else "~", path, human_size(len(new_text.encode("utf-8"))) if old is None else "")
-    return "OK: %s %s (%d lines%s)" % ("created" if old is None else ("appended" if appending else "overwritten"),
-                                       rel(ctx, path), n, ", total %d" % len(new_text.splitlines()) if appending else "")
+    res = "OK: %s %s (%d lines%s)" % ("created" if old is None else ("appended" if appending else "overwritten"),
+                                      rel(ctx, path), n, ", total %d" % len(new_text.splitlines()) if appending else "")
+    if old is not None and not appending:
+        res += keepguard.report(ctx, path, old, new_text)           # a feature thrown away to dodge an error is called out
+    return res
 
 
 @tool("edit_file", "Edit text in an existing file. old_string must match exactly (without line numbers) and be unique, unless replace_all=true. For several changes at once pass 'edits'. Read the file before editing.",
@@ -216,7 +220,7 @@ def t_edit_file(a, ctx):
     path.write_text(new_text, encoding="utf-8")
     ctx.undo.append({"t": "write", "path": path, "old": text})
     track(ctx, "~", path)
-    return "OK: %s edited (%d replacements)" % (rel(ctx, path), total)
+    return "OK: %s edited (%d replacements)%s" % (rel(ctx, path), total, keepguard.report(ctx, path, text, new_text))
 
 
 # --- tool: file manager -----------------------------------------------------

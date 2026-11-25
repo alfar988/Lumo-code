@@ -20,7 +20,7 @@
       "pri": 0
     },
     "code-quality-skill": {
-      "desc": "Write correct, readable, safe code: structure, error handling, validation, security, tests, self-review checklist.",
+      "desc": "Write correct, readable, safe code: blueprint, structure, errors, validation, security, tests, per-project checks, the verifier messages.",
       "kind": "core",
       "match": [
         [
@@ -54,7 +54,7 @@
       "pri": 0
     },
     "design-skill": {
-      "desc": "UI/GUI/CSS design: direction, tokens, type, spacing, layout, components, dark mode, review loop.",
+      "desc": "UI/GUI/CSS design: brief, direction, tokens, palettes, type, layout, all component states, game HUD, dashboards, forms, terminal output, copy, review loop.",
       "kind": "core",
       "match": [
         [
@@ -138,7 +138,7 @@
       "pri": 0
     },
     "debug-skill": {
-      "desc": "Fix errors on your own: reproduce, read, locate, fix the root cause, re-run; runbook of common errors.",
+      "desc": "Fix errors on your own: reproduce, read, locate, fix the root cause, re-run; never delete the failing feature; routine for 'fix it' requests; runbook of common errors.",
       "kind": "core",
       "match": [
         [
@@ -591,7 +591,7 @@
       "pri": 0
     },
     "video-skill": {
-      "desc": "2D videos made with Python (stickman fights, explainers, kinetic text, charts, slideshows) rendered to MP4 with sound: brief, storyboard, lumovideo, render_video, checks.",
+      "desc": "Any video made with Python (explainers, promos, tutorials, charts, slideshows, kinetic text, intros, countdowns, science, stories, fights, 3D) rendered to MP4 with sound: genre table, storyboard, lumovideo, render_video, checks, repairs.",
       "kind": "core",
       "match": [
         [
