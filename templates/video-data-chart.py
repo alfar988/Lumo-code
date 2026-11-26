@@ -7,6 +7,7 @@ Needs:      Pillow and ffmpeg (Termux: pkg install ffmpeg python-pillow).
 EDIT:       SERIES (label, value) with the user's real numbers, UNIT, KEY_VALUE, KEY_LABEL, VERTICAL. Never invent data: ask or say it is an example.
 """
 
+import math
 import os
 import sys
 
@@ -32,7 +33,8 @@ def make_video():
 
     def backdrop(c, accent):
         c.background(BG_TOP, BG_BOTTOM)
-        c.glow(cx, cy * 0.6, 420, accent, 0.25)
+        c.glow(cx + 290 * math.sin(c.T * 1.1), cy * 0.6 + 100 * math.cos(c.T * 0.9), 440, accent, 0.28)      # the light drifts, so the picture is never frozen
+        c.glow(cx - 330 * math.sin(c.T * 0.9 + 1.0), cy * 1.2 + 60 * math.sin(c.T * 1.6), 320, PALETTE[2], 0.2)
         c.vignette(0.35)
 
     def title(c, t):

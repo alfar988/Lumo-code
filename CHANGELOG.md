@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.13.0] - 2026-11-25
+## [1.13.0] - 2026-11-26
 
 ### Fixed
 - **`/cd` is remembered.** The folder chosen with `/cd` was only kept in memory, so the next start opened `~/workspace` again. It is now saved in the settings (`workspace`), and a start from your home folder or the Lumo folder opens the workspace you used last (`~/workspace` only when none was saved). Order: a folder on the command line, then the folder you started in, then the saved workspace, then `~/workspace`. A saved folder that no longer exists falls back with one plain line. `/cd -` returns to the previous folder, `/cd` shows the current one, quoted paths work, and the folder you leave gets its conversation saved first. Tested with real restarts of the program.
@@ -11,6 +11,8 @@
 - **No feature is deleted to dodge an error.** After a write or an edit of an existing code file (Python, JavaScript, TypeScript, HTML, Lua) the result lists the functions and classes that are gone and tells the model to put them back and fix the cause; a big cut without lost functions is noticed too, and the user sees a `removed: ...` line. The system prompt, the tool rules, the loop guard, the debug skill and the video skill all say the same: an error points at one wrong name, value or call, not at the feature; after four distinct attempts the feature stays in place and the user is asked.
 - **A stricter verifier.** Code that looks cut off or left for later (`# ... existing code ...`, "rest of the code here", "your code here") is an error; warnings for a bare `except:`, `except Exception: pass`, a mutable default argument, a function with no body, unused imports, an empty JavaScript `catch`, `eval`, and a hard-coded secret.
 - **Six more video templates (37 templates in total):** `video-promo`, `video-data-chart`, `video-tutorial`, `video-slideshow`, `video-science` (bubble sort, orbits, waves) and `video-countdown` (ring, ticks, fireworks). Each has a self test and was rendered to a real MP4 with sound; all have a vertical option.
+
+- **README media.** A hero GIF, a recording of a real Lumo session in the terminal, and six videos rendered by Lumo's own video engine from the new templates (promo, tutorial, data story, science, countdown, kinetic text), each with a silent GIF preview and an MP4 with sound. Sources and a GIF helper are in `assets/media/`. The clips led to two small template changes: the promo button widens for a long call to action, and the backdrops of the promo, data-chart, tutorial and kinetic-text templates drift slowly so the render check no longer reports frozen frames.
 
 ### Changed
 - **`design-skill` rewritten (12 KB to 35 KB).** A brief and a design plan before any code, a direction table, tokens with a dark set, ten palettes whose contrast is checked by a runnable test, type scale and safe stacks, layout and spacing rules, every component with all its states (buttons, fields, dialogs, toasts, tables, empty and loading states), motion, WCAG 2.2 checks, and special parts for game HUDs and touch controls, dashboards and charts, landing pages and shops, terminal output and mobile screens; copy rules, the generic-AI patterns to avoid, a review loop with concrete checks, good and bad examples.

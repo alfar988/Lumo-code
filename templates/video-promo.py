@@ -56,7 +56,8 @@ def make_video():
 
     def backdrop(c, accent):
         c.background(BG_TOP, BG_BOTTOM)
-        c.glow(cx, cy * 0.8, 460, accent, 0.30)
+        c.glow(cx + 280 * math.sin(c.T * 1.2), cy * 0.8 + 100 * math.cos(c.T * 0.9), 480, accent, 0.34)      # the light drifts, so the picture is never frozen
+        c.glow(cx - 320 * math.sin(c.T * 1.0 + 1.0), cy * 1.15 + 50 * math.sin(c.T * 1.7), 340, PALETTE[2], 0.22)
         c.vignette(0.4)
 
     def hook(c, t):
@@ -102,7 +103,8 @@ def make_video():
         c.text(OFFER, cx, cy - 90, big, "#ffffff", outline="#000000", outline_w=6, scale=ease(t / 0.5, "out_back"), max_w=w * 0.9)
         p = ease((t - 0.5) / 0.4, "out_back")
         k = p * (1 + 0.04 * math.sin(t * 6))
-        c.rect(cx, cy + 90, 460 * k, 110 * k, fill=PALETTE[1], radius=55, anchor="c")
+        bw = max(460, 34 * len(CTA) + 90)                                    # a long call to action gets a wider button
+        c.rect(cx, cy + 90, bw * k, 110 * k, fill=PALETTE[1], radius=55, anchor="c")
         c.text(CTA, cx, cy + 90, 52 * p, "#1a1033")
     sc = v.scene(4.0, offer, name="offer", transition="crossfade", trans_dur=0.4)
     v.sfx("coin", sc.start + 0.5, vol=0.8)

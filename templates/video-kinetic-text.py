@@ -7,6 +7,7 @@ Needs:      Pillow and ffmpeg (Termux: pkg install ffmpeg python-pillow).
 EDIT:       LINES (the words on screen), the palette and MUSIC. Each line is one scene of SECONDS_PER_LINE seconds.
 """
 
+import math
 import os
 import sys
 
@@ -32,7 +33,7 @@ def make_video():
 
         def draw(c, t):
             c.background("#0b0d1a", top)
-            c.glow(w / 2.0, h / 2.0, 520, accent, 0.45)
+            c.glow(w / 2.0 + 110 * math.sin(c.T * 1.3), h / 2.0 + 45 * math.cos(c.T * 1.1), 520, accent, 0.45)      # the light drifts, so the picture is never frozen
             pop = ease(t / 0.28, "out_back")
             lines = c.wrap(text.upper(), size, w * 0.9)                          # break long lines so they fit the screen
             n = lines.count("\n") + 1

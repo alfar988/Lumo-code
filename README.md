@@ -6,6 +6,39 @@ Lumo Code is an AI agent for the terminal. Ask a question, have something resear
 
 It was built to run well in Termux on a phone (narrow output, no heavy dependencies), and it runs the same on any Linux machine or macOS.
 
+<p align="center">
+  <a href="assets/media/hero.mp4"><img src="assets/media/hero.gif" alt="Describe it. Lumo builds it. Checks it. Fixes it." width="640"></a>
+</p>
+
+## See it work
+
+<p align="center">
+  <img src="assets/media/demo-terminal.gif" alt="A Lumo Code session in the terminal: a request for a promo video, the starter template, the edit shown as a diff, the render and the automatic check" width="720">
+</p>
+
+A real session recorded from Lumo's own interface: the request, the starter template, the edit (shown as a diff), the render and the automatic check, ending with an MP4 in the workspace. The model in this recording is a scripted stand-in so the demo repeats exactly; the interface, the tools, the template and the video are the real thing. With a real model the steps depend on the model you choose.
+
+## Made with Lumo's own video engine
+
+These clips were rendered by `lumovideo`, the video library bundled with Lumo, from the starters in `templates/`. Click a preview to play the MP4 with sound (the previews are silent GIFs). The scripts are in [`assets/media/src/`](assets/media/src/) and each one rebuilds its clip with a single command.
+
+<table>
+  <tr>
+    <td align="center"><a href="assets/media/lumo-promo.mp4"><img src="assets/media/lumo-promo.gif" width="380" alt="The Lumo Code promo video"></a><br><b>Promo</b><br><sub><code>video-promo</code></sub></td>
+    <td align="center"><a href="assets/media/install-tutorial.mp4"><img src="assets/media/install-tutorial.gif" width="380" alt="The three install commands, typed out in a terminal window"></a><br><b>Tutorial</b><br><sub><code>video-tutorial</code></sub></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="assets/media/by-the-numbers.mp4"><img src="assets/media/by-the-numbers.gif" width="380" alt="The 37 starters by kind, as an animated bar chart"></a><br><b>Data story</b><br><sub><code>video-data-chart</code></sub></td>
+    <td align="center"><a href="assets/media/science.mp4"><img src="assets/media/science.gif" width="380" alt="Bubble sort, planets in orbit and two waves adding up"></a><br><b>Science animation</b><br><sub><code>video-science</code></sub></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="assets/media/countdown.mp4"><img src="assets/media/countdown.gif" width="380" alt="A countdown with fireworks"></a><br><b>Countdown</b><br><sub><code>video-countdown</code></sub></td>
+    <td align="center"><a href="assets/media/hero.mp4"><img src="assets/media/hero.gif" width="380" alt="Kinetic text: Describe it. Lumo builds it. Checks it. Fixes it."></a><br><b>Kinetic text</b><br><sub><code>video-kinetic-text</code></sub></td>
+  </tr>
+</table>
+
+Explainers, slideshows, stories, 3D scenes, soldiers against zombies and stickman fights use the same engine: ask for the video you want in plain words.
+
 ## What it does
 
 - **Builds things end to end:** games (2D canvas and 3D Three.js), websites, web apps, APIs, bots, scripts.
@@ -52,6 +85,8 @@ python run.py
 ```
 
 If your system has no `python` command, use `python3 run.py`.
+
+Prefer to watch? The three commands in 18 seconds: [install-tutorial.mp4](assets/media/install-tutorial.mp4).
 
 On the first run:
 
